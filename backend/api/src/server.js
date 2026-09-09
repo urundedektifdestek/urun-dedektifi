@@ -6,13 +6,14 @@ const PORT = Number(process.env.PORT || 8080);
 
 const CONFIG = {
   app: process.env.PUBLIC_API_NAME || "Ürün Dedektifi API",
-  version: "2.2.0-m2-clean-ai-json",
+  version: "2.3.0-m2-trendyol-link-adapter",
   openaiKey: process.env.OPENAI_API_KEY || "",
   openaiModel: process.env.OPENAI_MODEL || "gpt-5-mini",
   apiToken: process.env.API_TOKEN || "",
   databaseUrl: process.env.DATABASE_URL || "",
   serpapiKey: process.env.SERPAPI_KEY || "",
-  apifyToken: process.env.APIFY_TOKEN || ""
+  apifyToken: process.env.APIFY_TOKEN || "",
+  linkFetchEnabled: (process.env.LINK_FETCH_ENABLED || "true").toLowerCase() !== "false"
 };
 
 const memory = { analyses: [], saved: [], decisions: [], created_at: new Date().toISOString() };
@@ -21,6 +22,7 @@ function now(){ return new Date().toISOString(); }
 function id(prefix){ return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2,8)}`; }
 function safeText(v){ return v === null || v === undefined ? "" : String(v).trim(); }
 function safeInt(v, fallback=0){ const n = Number(v); return Number.isFinite(n) ? Math.round(n) : fallback; }
+function uniq(arr){ return [...new Set((arr || []).map(safeText).filter(Boolean))]; }
 
 let pool = null;
 let dbReady = false;
@@ -133,6 +135,297 @@ function checkAuth(req){
   return token === CONFIG.apiToken ? null : { ok:false, error:"unauthorized" };
 }
 
+/* -------------------- Public product link adapter -------------------- */
+
+function detectSource(productUrl){
+  const u = safeText(productUrl).toLowerCase();
+  if (u.includes("shopify")) return "Shopify";
+  if (u.includes("trendyol")) return "Trendyol";
+  if (u.includes("etsy")) return "Etsy";
+  if (u.includes("amazon")) return "Amazon";
+  if (u.includes("alibaba")) return "Alibaba";
+  return productUrl ? "Public Link" : "AI Oda";
+}
+
+function isHttpUrl(v){
+  try {
+    const u = new URL(v);
+    return u.protocol === "http:" || u.protocol === "https:";
+  } catch { return false; }
+}
+
+function decodeEntities(s){
+  return safeText(s)
+    .replace(/&quot;/g,'"')
+    .replace(/&#34;/g,'"')
+    .replace(/&#x27;/g,"'")
+    .replace(/&#39;/g,"'")
+    .replace(/&amp;/g,"&")
+    .replace(/&lt;/g,"<")
+    .replace(/&gt;/g,">")
+    .replace(/\s+/g," ")
+    .trim();
+}
+
+function stripTags(s){
+  return decodeEntities(safeText(s).replace(/<script[\s\S]*?<\/script>/gi," ").replace(/<style[\s\S]*?<\/style>/gi," ").replace(/<[^>]+>/g," "));
+}
+
+function meta(html, key){
+  const patterns = [
+    new RegExp(`<meta[^>]+property=["']${key}["'][^>]+content=["']([^"']+)["'][^>]*>`, "i"),
+    new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+property=["']${key}["'][^>]*>`, "i"),
+    new RegExp(`<meta[^>]+name=["']${key}["'][^>]+content=["']([^"']+)["'][^>]*>`, "i"),
+    new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+name=["']${key}["'][^>]*>`, "i")
+  ];
+  for (const p of patterns) {
+    const m = html.match(p);
+    if (m?.[1]) return decodeEntities(m[1]);
+  }
+  return "";
+}
+
+function titleTag(html){
+  const m = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  return m?.[1] ? decodeEntities(stripTags(m[1])) : "";
+}
+
+function parseJsonLd(html){
+  const out = [];
+  const re = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  let m;
+  while ((m = re.exec(html)) !== null) {
+    const raw = decodeEntities(m[1]).trim();
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) out.push(...parsed);
+      else if (parsed?.["@graph"] && Array.isArray(parsed["@graph"])) out.push(...parsed["@graph"]);
+      else out.push(parsed);
+    } catch {}
+  }
+  return out;
+}
+
+function pickProductJsonLd(items){
+  for (const it of items || []) {
+    const type = it?.["@type"];
+    const types = Array.isArray(type) ? type.map(String) : [String(type || "")];
+    if (types.some(t => t.toLowerCase().includes("product"))) return it;
+  }
+  return null;
+}
+
+function imageListFromJsonLd(product){
+  const img = product?.image;
+  if (!img) return [];
+  if (Array.isArray(img)) return img.map(x => typeof x === "string" ? x : x?.url).filter(Boolean);
+  if (typeof img === "string") return [img];
+  if (img?.url) return [img.url];
+  return [];
+}
+
+function findImageUrls(html, source){
+  const urls = [];
+  const imgRe = /https?:\/\/[^"'<>\\\s]+\.(?:jpg|jpeg|png|webp)(?:\?[^"'<>\\\s]*)?/gi;
+  let m;
+  while ((m = imgRe.exec(html)) !== null) urls.push(m[0]);
+
+  const cdnRe = /https?:\/\/[^"'<>\\\s]*dsmcdn\.com[^"'<>\\\s]*/gi;
+  while ((m = cdnRe.exec(html)) !== null) {
+    if (/\.(jpg|jpeg|png|webp)/i.test(m[0])) urls.push(m[0]);
+  }
+
+  return uniq(urls)
+    .filter(u => !/logo|sprite|favicon/i.test(u))
+    .slice(0, 12);
+}
+
+function extractPrice(html, product){
+  const offer = Array.isArray(product?.offers) ? product.offers[0] : product?.offers;
+  const p = offer?.price || offer?.lowPrice || offer?.highPrice || "";
+  const currency = offer?.priceCurrency || "TRY";
+  if (p) return { visible_price: String(p), currency, evidence: "json_ld_offer" };
+
+  const candidates = [
+    /"sellingPrice"\s*:\s*"?([0-9]+(?:[.,][0-9]+)?)"?/i,
+    /"price"\s*:\s*"?([0-9]+(?:[.,][0-9]+)?)"?/i,
+    /([0-9]{1,3}(?:\.[0-9]{3})*(?:,[0-9]{2})?)\s*TL/i
+  ];
+  for (const re of candidates) {
+    const m = html.match(re);
+    if (m?.[1]) return { visible_price: m[1], currency:"TRY", evidence:"html_regex" };
+  }
+  return null;
+}
+
+function extractRating(product){
+  const rating = product?.aggregateRating;
+  if (!rating) return null;
+  return {
+    rating_value: rating.ratingValue ? String(rating.ratingValue) : null,
+    review_count: rating.reviewCount || rating.ratingCount ? Number(rating.reviewCount || rating.ratingCount) : null,
+    evidence: "json_ld_aggregateRating"
+  };
+}
+
+function extractVisibleSalesSignal(html){
+  const text = stripTags(html).slice(0, 500000);
+  const patterns = [
+    /(son\s+\d+\s+günde\s+[0-9.+]+\s*(?:adet|ürün)?\s*satıldı)/i,
+    /([0-9.+]+\s*(?:adet|ürün)?\s*satıldı)/i,
+    /([0-9.+]+\s*kişi\s+satın\s+aldı)/i,
+    /([0-9.+]+\s*ürün\s+satıldı)/i
+  ];
+  for (const p of patterns) {
+    const m = text.match(p);
+    if (m?.[1]) return {
+      visible_sales_signal: decodeEntities(m[1]),
+      exact_sales_count: null,
+      evidence: "visible_text_regex",
+      warning: "Bu exact satış sayısı değildir; görünür satış sinyali olarak saklanır."
+    };
+  }
+  return null;
+}
+
+function extractSellerHint(html){
+  const patterns = [
+    /"merchantName"\s*:\s*"([^"]+)"/i,
+    /"sellerName"\s*:\s*"([^"]+)"/i,
+    /"supplierName"\s*:\s*"([^"]+)"/i,
+    /"storeName"\s*:\s*"([^"]+)"/i
+  ];
+  for (const p of patterns) {
+    const m = html.match(p);
+    if (m?.[1]) return decodeEntities(m[1]);
+  }
+  return "";
+}
+
+async function fetchWithTimeout(url, ms=15000){
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try {
+    const r = await fetch(url, {
+      signal: ctrl.signal,
+      headers: {
+        "User-Agent": "Mozilla/5.0 (compatible; UrunDedektifiBot/1.0; +https://urun-dedektifi-production.up.railway.app)",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.7,en;q=0.6"
+      }
+    });
+    const body = await r.text();
+    return {status:r.status, ok:r.ok, final_url:r.url, html:body};
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+async function readProductEvidence(productUrl){
+  const url = safeText(productUrl);
+  const source = detectSource(url);
+  const base = {
+    ok:false,
+    source,
+    url,
+    fetched_at:now(),
+    title:"",
+    description:"",
+    images:[],
+    video:null,
+    price:null,
+    rating:null,
+    seller_name:"",
+    visible_sales_signal:null,
+    exact_sales_count:null,
+    reviews:[],
+    review_status:"not_available",
+    limitations:[],
+    evidence_quality:"none"
+  };
+
+  if (!url) return {...base, error:"url_empty", limitations:["Ürün linki yok."]};
+  if (!isHttpUrl(url)) return {...base, error:"invalid_url", limitations:["Geçerli http/https linki değil."]};
+  if (!CONFIG.linkFetchEnabled) return {...base, error:"link_fetch_disabled", limitations:["LINK_FETCH_ENABLED=false."]};
+
+  try {
+    const fetched = await fetchWithTimeout(url);
+    base.http_status = fetched.status;
+    base.final_url = fetched.final_url;
+
+    if (!fetched.ok || !fetched.html) {
+      return {
+        ...base,
+        error:`fetch_failed_${fetched.status}`,
+        limitations:[`Sayfa alınamadı. HTTP ${fetched.status}`, "Bazı pazaryerleri bot trafiğini engelleyebilir."]
+      };
+    }
+
+    const html = fetched.html;
+    const jsonLd = parseJsonLd(html);
+    const productLd = pickProductJsonLd(jsonLd);
+
+    const ogTitle = meta(html,"og:title");
+    const ogDesc = meta(html,"og:description") || meta(html,"description");
+    const ogImage = meta(html,"og:image") || meta(html,"twitter:image");
+
+    const title = flattenClean(productLd?.name || ogTitle || titleTag(html));
+    const description = flattenClean(productLd?.description || ogDesc);
+    const images = uniq([ogImage, ...imageListFromJsonLd(productLd), ...findImageUrls(html, source)]).slice(0, 12);
+    const price = extractPrice(html, productLd);
+    const rating = extractRating(productLd);
+    const visibleSales = extractVisibleSalesSignal(html);
+    const seller = extractSellerHint(html);
+
+    const limitations = [];
+    if (!images.length) limitations.push("Fotoğraf linki bulunamadı veya sayfa dinamik yüklüyor.");
+    if (!rating) limitations.push("Puan/yorum sayısı bulunamadı.");
+    if (!visibleSales) limitations.push("Görünür satış sinyali bulunamadı.");
+    limitations.push("Yorum metinleri bu aşamada çekilmiyor; yorum adapterı M2.4/M2.5 aşamasında bağlanacak.");
+    limitations.push("Exact satış sayısı üretilmedi.");
+
+    return {
+      ...base,
+      ok:true,
+      title,
+      description,
+      images,
+      product_video:null,
+      price,
+      rating,
+      seller_name:seller,
+      visible_sales_signal:visibleSales,
+      exact_sales_count:null,
+      review_status:"pending_review_adapter",
+      limitations,
+      evidence_quality: [title, description, images.length, price, rating, visibleSales].filter(Boolean).length >= 3 ? "medium" : "low"
+    };
+  } catch(e) {
+    return {
+      ...base,
+      error:e?.name === "AbortError" ? "fetch_timeout" : "fetch_exception",
+      message:e?.message || "Sayfa okunamadı",
+      limitations:["Sayfa okunamadı veya kaynak engelledi.", "Bu aşama güvenli fallback ile devam eder."]
+    };
+  }
+}
+
+function flattenClean(v, max=900){
+  if (v === null || v === undefined) return "";
+  if (typeof v === "string") return v.replace(/\s+/g," ").trim().slice(0,max);
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
+  if (Array.isArray(v)) return v.map(x => flattenClean(x, 220)).filter(Boolean).slice(0,6).join(" • ").slice(0,max);
+  if (typeof v === "object") {
+    return Object.entries(v).map(([k,val]) => {
+      const f = flattenClean(val, 260);
+      return f ? `${k}: ${f}` : "";
+    }).filter(Boolean).slice(0,8).join(" | ").slice(0,max);
+  }
+  return String(v).trim().slice(0,max);
+}
+
+/* -------------------- AI Council -------------------- */
+
 function outputText(data){
   if (typeof data.output_text === "string" && data.output_text.trim()) return data.output_text.trim();
   const chunks = [];
@@ -153,40 +446,25 @@ function parseJsonLoose(text){
   return null;
 }
 
-function flattenValue(v, maxLen=900){
-  if (v === null || v === undefined) return "";
-  if (typeof v === "string") return v.trim().slice(0,maxLen);
-  if (typeof v === "number" || typeof v === "boolean") return String(v);
-  if (Array.isArray(v)) {
-    return v.map(x => flattenValue(x, 220)).filter(Boolean).slice(0,6).join(" • ").slice(0,maxLen);
-  }
-  if (typeof v === "object") {
-    const parts = [];
-    for (const [k,val] of Object.entries(v)) {
-      const flat = flattenValue(val, 320);
-      if (flat) parts.push(`${k}: ${flat}`);
-    }
-    return parts.slice(0,8).join(" | ").slice(0,maxLen);
-  }
-  return String(v).trim().slice(0,maxLen);
+function extractString(src,key){
+  const re = new RegExp(`"${key}"\\s*:\\s*"((?:\\\\.|[^"\\\\])*)"`, "s");
+  const m = safeText(src).match(re);
+  if(!m) return "";
+  try { return JSON.parse(`"${m[1]}"`); } catch { return m[1]; }
 }
-
+function extractNumber(src,key){
+  const m = safeText(src).match(new RegExp(`"${key}"\\s*:\\s*(\\d+)`));
+  return m ? Number(m[1]) : null;
+}
 function cleanItem(x){
-  const s = flattenValue(x, 260)
-    .replace(/\s+/g, " ")
-    .replace(/^[\s,:;{}\[\]"]+|[\s,:;{}\[\]"]+$/g, "")
-    .trim();
-  if (!s) return "";
-  if (s.length < 6) return "";
+  const s = flattenClean(x, 260).replace(/^[\s,:;{}\[\]"]+|[\s,:;{}\[\]"]+$/g, "").trim();
+  if (!s || s.length < 6) return "";
   if (/^[,:;{}\[\]" ]+$/.test(s)) return "";
   if (s.includes("\n{") || s === ":" || s === ",") return "";
   return s.slice(0,260);
 }
-
 function cleanArray(value, fallback=[]){
-  let arr = [];
-  if (Array.isArray(value)) arr = value;
-  else if (value) arr = [value];
+  let arr = Array.isArray(value) ? value : value ? [value] : [];
   const out = [];
   for (const item of arr) {
     const c = cleanItem(item);
@@ -197,17 +475,6 @@ function cleanArray(value, fallback=[]){
     if (c && !out.includes(c)) out.push(c);
   }
   return out.slice(0,5);
-}
-
-function extractString(src,key){
-  const re = new RegExp(`"${key}"\\s*:\\s*"((?:\\\\.|[^"\\\\])*)"`, "s");
-  const m = safeText(src).match(re);
-  if(!m) return "";
-  try { return JSON.parse(`"${m[1]}"`); } catch { return m[1]; }
-}
-function extractNumber(src,key){
-  const m = safeText(src).match(new RegExp(`"${key}"\\s*:\\s*(\\d+)`));
-  return m ? Number(m[1]) : null;
 }
 function extractArray(src,key){
   const re = new RegExp(`"${key}"\\s*:\\s*\\[([\\s\\S]*?)\\]`, "s");
@@ -234,19 +501,19 @@ function normalizeCouncil(raw, txt=""){
   const result = {
     mode:"openai_war_room",
     real_ai:true,
-    summary:flattenValue(c.summary, 700) || extractString(txt,"summary") || "Derin AI tartışması üretildi.",
+    summary:flattenClean(c.summary, 700) || extractString(txt,"summary") || "Derin AI tartışması üretildi.",
     score,
     decision,
-    gpt:flattenValue(c.gpt, 900) || extractString(txt,"gpt") || "Ticari fırsat ve hedef kitle kanıtlarla tartışılmalı.",
-    gemini:flattenValue(c.gemini, 900) || extractString(txt,"gemini") || "Trend sinyalleri satış sayısı değildir; pazar sinyalleri doğrulanmalı.",
-    claude:flattenValue(c.claude, 900) || extractString(txt,"claude") || "Risk, regülasyon ve marka/IP kanıtı olmadan AL kilitli kalır.",
-    deepseek:flattenValue(c.deepseek, 900) || extractString(txt,"deepseek") || "Alibaba/tedarik maliyeti için canlı kaynak adapterı gerekir.",
+    gpt:flattenClean(c.gpt, 900) || extractString(txt,"gpt") || "Ticari fırsat ve hedef kitle kanıtlarla tartışılmalı.",
+    gemini:flattenClean(c.gemini, 900) || extractString(txt,"gemini") || "Trend sinyalleri satış sayısı değildir; pazar sinyalleri doğrulanmalı.",
+    claude:flattenClean(c.claude, 900) || extractString(txt,"claude") || "Risk, regülasyon ve marka/IP kanıtı olmadan AL kilitli kalır.",
+    deepseek:flattenClean(c.deepseek, 900) || extractString(txt,"deepseek") || "Alibaba/tedarik maliyeti için canlı kaynak adapterı gerekir.",
     common_points:cleanArray(c.common_points, extractArray(txt,"common_points").concat(fallbackCommon)),
     objections:cleanArray(c.objections, extractArray(txt,"objections")),
     missing_evidence:cleanArray(c.missing_evidence, extractArray(txt,"missing_evidence").concat(fallbackMissing)),
     next_actions:cleanArray(c.next_actions, extractArray(txt,"next_actions")),
-    judge:flattenValue(c.judge, 600) || extractString(txt,"judge") || "Kritik kanıtlar tamamlanmadan AL kararı kilitli.",
-    alibaba_research:flattenValue(c.alibaba_research, 700) || extractString(txt,"alibaba_research") || "Canlı Alibaba araştırması M2 adapter ile yapılacak.",
+    judge:flattenClean(c.judge, 600) || extractString(txt,"judge") || "Kritik kanıtlar tamamlanmadan AL kararı kilitli.",
+    alibaba_research:flattenClean(c.alibaba_research, 700) || extractString(txt,"alibaba_research") || "Canlı Alibaba araştırması M2 adapter ile yapılacak.",
     product_strengths:cleanArray(c.product_strengths, extractArray(txt,"product_strengths")),
     review_insights:cleanArray(c.review_insights, extractArray(txt,"review_insights")),
     visual_insights:cleanArray(c.visual_insights, extractArray(txt,"visual_insights"))
@@ -260,30 +527,33 @@ function normalizeCouncil(raw, txt=""){
   return result;
 }
 
-function localCouncil(){
+function localCouncil(productEvidence=null){
+  const extraMissing = productEvidence?.ok
+    ? ["Yorum metinleri", "Satıcı yoğunluğu", "Canlı Alibaba maliyeti"]
+    : fallbackMissing;
   return {
     mode:"local_fallback",
     real_ai:false,
-    score:55,
+    score: productEvidence?.ok ? 58 : 55,
     decision:"İNCELE",
-    summary:"Yerel güvenli ön analiz. Canlı kaynaklar bağlanınca derin veriyle zenginleşir.",
+    summary: productEvidence?.ok ? `Link okundu: ${productEvidence.title || productEvidence.source}. AI yoksa yerel ön analiz.` : "Yerel güvenli ön analiz. Canlı kaynaklar bağlanınca derin veriyle zenginleşir.",
     gpt:"Niş fırsat olabilir; hedef kitle ve kullanım senaryosu netleştirilmeli.",
     gemini:"Trend olumlu olabilir; sürdürülebilirlik/Montessori gibi açıları kreatif avantaj sağlar.",
     claude:"Kimyasal test, yaş grubu güvenliği, marka/IP ve iade riski kontrol edilmeden AL kilitli.",
     deepseek:"Alibaba canlı maliyet araştırması için adapter gerekir; MOQ, birim fiyat, navlun ve paket hacmi toplanmalı.",
     common_points:fallbackCommon,
     objections:["Canlı veri eksik","Regülasyon belirsiz"],
-    missing_evidence:fallbackMissing,
+    missing_evidence:extraMissing,
     next_actions:["Alibaba adapter bağla","Trendyol/Shopify ürün görsellerini çek","Yorumları sınıflandır"],
     judge:"İNCELE; AL kararı Evidence Gate ile kilitli.",
     alibaba_research:"Canlı Alibaba araması M2'de bağlanacak.",
     product_strengths:["Niş hedef kitle olabilir"],
     review_insights:["Yorum çekimi bekliyor"],
-    visual_insights:["Foto/video çekimi bekliyor"]
+    visual_insights: productEvidence?.images?.length ? [`${productEvidence.images.length} görsel linki yakalandı.`] : ["Foto/video çekimi bekliyor"]
   };
 }
 
-function buildAiPrompt(payload){
+function buildAiPrompt(payload, productEvidence){
   return `
 Sen Ürün Dedektifi AI Savaş Odası'sın. Cevabın SADECE geçerli JSON olacak.
 
@@ -305,6 +575,7 @@ Her rol 3-5 cümlelik güçlü tartışma yazsın.
 Kanıt kuralı:
 Ürün fotoğrafı, yorum, video, satıcı sayısı, satış sinyali yoksa açıkça "kanıt yok" de.
 Exact satış sayısı uydurma. Reklam yoğunluğu satış değildir.
+Eğer ürün_link_kanıtı içinde fiyat/görsel/puan varsa bunu kanıt olarak kullan; yoksa uydurma.
 
 JSON şeması:
 {
@@ -333,11 +604,14 @@ Kanallar: Trendyol, Shopify, Etsy, Alibaba, Yerli üretim, CrossMarket, Meta/Ins
 Mesaj: ${payload.message || ""}
 Link: ${payload.productUrl || ""}
 Metin/Yorum: ${payload.productText || ""}
+
+ürün_link_kanıtı:
+${JSON.stringify(productEvidence || null, null, 2)}
 `.trim();
 }
 
-async function openAiCouncil(payload){
-  if(!CONFIG.openaiKey) return localCouncil();
+async function openAiCouncil(payload, productEvidence=null){
+  if(!CONFIG.openaiKey) return localCouncil(productEvidence);
 
   try{
     const r = await fetch("https://api.openai.com/v1/responses", {
@@ -345,35 +619,28 @@ async function openAiCouncil(payload){
       headers:{"Authorization":`Bearer ${CONFIG.openaiKey}`,"Content-Type":"application/json"},
       body:JSON.stringify({
         model:CONFIG.openaiModel,
-        input:buildAiPrompt(payload),
+        input:buildAiPrompt(payload, productEvidence),
         store:false,
         max_output_tokens:4500
       })
     });
 
     const data = await r.json().catch(()=>({}));
-    if(!r.ok) return {...localCouncil(),mode:"openai_error_fallback",openai_error:data?.error?.message || `OpenAI HTTP ${r.status}`};
+    if(!r.ok) return {...localCouncil(productEvidence),mode:"openai_error_fallback",openai_error:data?.error?.message || `OpenAI HTTP ${r.status}`};
 
     const txt = outputText(data);
     const parsed = parseJsonLoose(txt);
     const c = normalizeCouncil(parsed || {}, txt);
     c.mode = parsed ? "openai_war_room" : "openai_clean_extracted";
     c.openai_format_cleaned = true;
+    c.evidence_used = productEvidence?.ok ? true : false;
     return c;
   }catch(e){
-    return {...localCouncil(),mode:"openai_error_fallback",openai_error:e?.message || "OpenAI bağlantı hatası"};
+    return {...localCouncil(productEvidence),mode:"openai_error_fallback",openai_error:e?.message || "OpenAI bağlantı hatası"};
   }
 }
 
-function detectSource(productUrl){
-  const u = safeText(productUrl).toLowerCase();
-  if (u.includes("shopify")) return "Shopify";
-  if (u.includes("trendyol")) return "Trendyol";
-  if (u.includes("etsy")) return "Etsy";
-  if (u.includes("amazon")) return "Amazon";
-  if (u.includes("alibaba")) return "Alibaba";
-  return "AI Oda";
-}
+/* -------------------- Persistence -------------------- */
 
 async function saveAnalysisToDb(result){
   if (!pool || !dbReady) return {saved:false, reason: dbError || "db_not_ready"};
@@ -421,8 +688,15 @@ async function analyze(req,res,body,params){
 
   if(!message && !productText && !productUrl) return send(res,400,{ok:false,error:"message, productText veya productUrl gerekli"});
 
-  const council = await openAiCouncil({message,productText,productUrl,profile});
-  const source = detectSource(productUrl);
+  let productEvidence = null;
+  if (productUrl && isHttpUrl(productUrl)) {
+    productEvidence = await readProductEvidence(productUrl);
+  }
+
+  const council = await openAiCouncil({message,productText,productUrl,profile}, productEvidence);
+  const source = productEvidence?.source || detectSource(productUrl);
+  const productTitle = productEvidence?.title || message || productText.slice(0,80) || "Ürün adayı";
+  const productDescription = productEvidence?.description || council.summary;
 
   const result = {
     ok:true,
@@ -431,23 +705,29 @@ async function analyze(req,res,body,params){
     version:CONFIG.version,
     created_at:now(),
     input:{message,productText,productUrl,profile},
+    product_evidence:productEvidence,
     ai_council:council,
     evidence_gate:{
       locked:Array.isArray(council.missing_evidence) && council.missing_evidence.length > 0,
       reason:"Kritik kanıt eksikse nihai AL kararı açılmaz.",
       missing_evidence:council.missing_evidence || []
     },
-    product_images:[],
-    product_video:null,
-    product_description:council.summary,
+    product_images:productEvidence?.images || [],
+    product_video:productEvidence?.product_video || null,
+    product_description:productDescription,
     products:[{
       id:id("product"),
-      title:message || productText.slice(0,80) || "Ürün adayı",
+      title:productTitle,
       source,
       source_provider:council.real_ai ? "openai" : "local_fallback",
       url:productUrl,
+      price:productEvidence?.price || null,
+      rating:productEvidence?.rating || null,
+      seller_name:productEvidence?.seller_name || "",
+      visible_sales_signal:productEvidence?.visible_sales_signal || null,
       exact_sales_count:null,
-      confidence:council.real_ai ? .80 : .45,
+      images:productEvidence?.images || [],
+      confidence:council.real_ai ? .82 : .45,
       score:{
         opportunity_score:council.score,
         decision:council.decision,
@@ -459,9 +739,10 @@ async function analyze(req,res,body,params){
     persistence:{enabled:!!pool, db_ready:dbReady, saved:false},
     policy:{
       exact_sales_count:"Exact satış sayısı yoksa uydurulmaz.",
+      visible_sales_signal:"Görünür satış sinyali exact satış sayısı değildir.",
       ads_policy:"Reklam yoğunluğu satış değildir.",
       evidence_gate:"Kritik kanıt eksikse AL kararı kilitli kalır.",
-      live_alibaba:"Canlı Alibaba maliyeti M2 adapter ile bağlanacak."
+      live_alibaba:"Canlı Alibaba maliyeti M2.5 adapter ile bağlanacak."
     }
   };
 
@@ -485,7 +766,7 @@ async function listHistory(req,res,url){
   const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit") || 30)));
   if (pool && dbReady) {
     const r = await dbQuery(
-      `SELECT id, created_at, message, product_url, source, score, decision, ai_council, evidence_gate, products
+      `SELECT id, created_at, message, product_url, source, score, decision, ai_council, evidence_gate, products, raw->'product_evidence' AS product_evidence
        FROM analyses
        WHERE user_id=$1
        ORDER BY created_at DESC
@@ -620,6 +901,7 @@ function status(){
       status:"GET /",
       ai_room:"GET/POST /ai-room",
       scan:"GET/POST /scan",
+      product_url:"GET/POST /product-url",
       history:"GET /history",
       save:"POST /save",
       saved:"GET /saved",
@@ -631,6 +913,8 @@ function status(){
       openai:!!CONFIG.openaiKey,
       openai_model:CONFIG.openaiModel,
       clean_ai_json:true,
+      link_fetch_enabled:CONFIG.linkFetchEnabled,
+      trendyol_link_adapter:true,
       database_url_present:!!CONFIG.databaseUrl,
       db_ready:dbReady,
       db_error:dbError,
@@ -663,6 +947,13 @@ const server = http.createServer(async(req,res)=>{
       } catch(e) {
         return send(res,500,{ok:false,db_ready:false,error:e?.message || "db_test_error"});
       }
+    }
+
+    if(url.pathname === "/product-url"){
+      const body = req.method === "POST" ? await readBody(req) : {};
+      const productUrl = safeText(body.url || body.productUrl || url.searchParams.get("url"));
+      const evidence = await readProductEvidence(productUrl);
+      return send(res, evidence.ok ? 200 : 422, {ok:evidence.ok, app:CONFIG.app, version:CONFIG.version, product_evidence:evidence});
     }
 
     if(["/ai-room","/scan","/api/scan/new"].includes(url.pathname)){
