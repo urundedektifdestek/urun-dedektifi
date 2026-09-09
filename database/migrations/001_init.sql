@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS analyses (
 );
 
 CREATE INDEX IF NOT EXISTS idx_analyses_user_created ON analyses(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_analyses_source_created ON analyses(source, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_analyses_score ON analyses(score DESC);
 
 CREATE TABLE IF NOT EXISTS saved_products (
