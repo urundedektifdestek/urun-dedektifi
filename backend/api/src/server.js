@@ -5,7 +5,7 @@ const PORT = Number(process.env.PORT || 8080);
 
 const CONFIG = {
   app: process.env.PUBLIC_API_NAME || "Ürün Dedektifi API",
-  version: "1.2.0-m1-structured-outputs",
+  version: "1.3.0-m1-compact-ai",
   openaiKey: process.env.OPENAI_API_KEY || "",
   openaiModel: process.env.OPENAI_MODEL || "gpt-5-mini",
   apiToken: process.env.API_TOKEN || "",
@@ -15,43 +15,6 @@ const CONFIG = {
 };
 
 const memory = { analyses: [], decisions: [], created_at: new Date().toISOString() };
-
-const COUNCIL_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  required: [
-    "mode",
-    "real_ai",
-    "summary",
-    "score",
-    "decision",
-    "gpt",
-    "gemini",
-    "claude",
-    "deepseek",
-    "common_points",
-    "objections",
-    "missing_evidence",
-    "next_actions",
-    "judge"
-  ],
-  properties: {
-    mode: { type: "string", enum: ["openai_council"] },
-    real_ai: { type: "boolean" },
-    summary: { type: "string" },
-    score: { type: "integer", minimum: 0, maximum: 100 },
-    decision: { type: "string", enum: ["GOLD", "GÜÇLÜ ADAY", "İNCELE", "RİSKLİ", "PASS"] },
-    gpt: { type: "string" },
-    gemini: { type: "string" },
-    claude: { type: "string" },
-    deepseek: { type: "string" },
-    common_points: { type: "array", items: { type: "string" } },
-    objections: { type: "array", items: { type: "string" } },
-    missing_evidence: { type: "array", items: { type: "string" } },
-    next_actions: { type: "array", items: { type: "string" } },
-    judge: { type: "string" }
-  }
-};
 
 function now(){ return new Date().toISOString(); }
 function id(prefix){ return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2,8)}`; }
@@ -92,8 +55,8 @@ function outputText(data){
   const chunks = [];
   for (const item of data.output || []) {
     for (const content of item.content || []) {
-      if (content.text) chunks.push(content.text);
-      if (content.type === "output_text" && content.text) chunks.push(content.text);
+      if (typeof content.text === "string") chunks.push(content.text);
+      if (content.type === "output_text" && typeof content.text === "string") chunks.push(content.text);
     }
   }
   return chunks.join("\n").trim();
@@ -116,34 +79,66 @@ function parseJsonLoose(text){
   return null;
 }
 
+function extractString(src, key){
+  const re = new RegExp(`"${key}"\\s*:\\s*"((?:\\\\.|[^"\\\\])*)"`, "s");
+  const m = safeText(src).match(re);
+  if (!m) return "";
+  try { return JSON.parse(`"${m[1]}"`); } catch { return m[1]; }
+}
+
+function extractNumber(src, key){
+  const re = new RegExp(`"${key}"\\s*:\\s*(\\d+)`);
+  const m = safeText(src).match(re);
+  return m ? Number(m[1]) : null;
+}
+
+function extractArray(src, key){
+  const re = new RegExp(`"${key}"\\s*:\\s*\\[([\\s\\S]*?)\\]`, "s");
+  const m = safeText(src).match(re);
+  if (!m) return [];
+  try { return JSON.parse(`[${m[1]}]`).map(x => safeText(x)).filter(Boolean); } catch {}
+  const values = [];
+  const itemRe = /"((?:\\.|[^"\\])*)"/g;
+  let im;
+  while ((im = itemRe.exec(m[1])) !== null) {
+    try { values.push(JSON.parse(`"${im[1]}"`)); } catch { values.push(im[1]); }
+  }
+  return values.filter(Boolean);
+}
+
 function safeArray(value){
   return Array.isArray(value) ? value.map(x => safeText(x)).filter(Boolean) : [];
 }
 
-function normalizeCouncil(raw){
+function decisionFromScore(score){
+  return score >= 82 ? "GOLD" : score >= 70 ? "GÜÇLÜ ADAY" : score >= 55 ? "İNCELE" : score >= 40 ? "RİSKLİ" : "PASS";
+}
+
+function normalizeCouncil(raw, sourceText = ""){
   const c = raw && typeof raw === "object" ? raw : {};
-  const scoreNum = Number(c.score);
+  const extractedScore = extractNumber(sourceText, "score");
+  const scoreNum = Number(c.score ?? extractedScore);
   const score = Number.isFinite(scoreNum) ? Math.max(0, Math.min(100, Math.round(scoreNum))) : 50;
+
+  const extractedDecision = extractString(sourceText, "decision");
   const allowed = ["GOLD","GÜÇLÜ ADAY","İNCELE","RİSKLİ","PASS"];
-  const decision = allowed.includes(c.decision) ? c.decision : (
-    score >= 82 ? "GOLD" : score >= 70 ? "GÜÇLÜ ADAY" : score >= 55 ? "İNCELE" : score >= 40 ? "RİSKLİ" : "PASS"
-  );
+  const decision = allowed.includes(c.decision) ? c.decision : allowed.includes(extractedDecision) ? extractedDecision : decisionFromScore(score);
 
   return {
     mode: "openai_council",
-    real_ai: c.real_ai === true,
-    summary: safeText(c.summary) || "AI Council analizi üretildi.",
+    real_ai: true,
+    summary: safeText(c.summary) || extractString(sourceText, "summary") || "AI Council analizi üretildi.",
     score,
     decision,
-    gpt: safeText(c.gpt) || "Talep, rekabet ve marj kanıtları doğrulanmalı.",
-    gemini: safeText(c.gemini) || "Trend sinyali satış sayısı kabul edilmemeli.",
-    claude: safeText(c.claude) || "Kritik kanıt eksikse AL kararı kilitli kalmalı.",
-    deepseek: safeText(c.deepseek) || "Tedarik ve maliyet netleşmeli.",
-    common_points: safeArray(c.common_points),
-    objections: safeArray(c.objections),
-    missing_evidence: safeArray(c.missing_evidence),
-    next_actions: safeArray(c.next_actions),
-    judge: safeText(c.judge) || "Kritik kanıtlar tamamlanmadan nihai AL kararı kilitli."
+    gpt: safeText(c.gpt) || extractString(sourceText, "gpt") || "Talep, rekabet ve marj kanıtları doğrulanmalı.",
+    gemini: safeText(c.gemini) || extractString(sourceText, "gemini") || "Trend sinyali satış sayısı kabul edilmemeli.",
+    claude: safeText(c.claude) || extractString(sourceText, "claude") || "Kritik kanıt eksikse AL kararı kilitli kalmalı.",
+    deepseek: safeText(c.deepseek) || extractString(sourceText, "deepseek") || "Tedarik ve maliyet netleşmeli.",
+    common_points: safeArray(c.common_points).length ? safeArray(c.common_points) : extractArray(sourceText, "common_points"),
+    objections: safeArray(c.objections).length ? safeArray(c.objections) : extractArray(sourceText, "objections"),
+    missing_evidence: safeArray(c.missing_evidence).length ? safeArray(c.missing_evidence) : extractArray(sourceText, "missing_evidence"),
+    next_actions: safeArray(c.next_actions).length ? safeArray(c.next_actions) : extractArray(sourceText, "next_actions"),
+    judge: safeText(c.judge) || extractString(sourceText, "judge") || "Kritik kanıtlar tamamlanmadan nihai AL kararı kilitli."
   };
 }
 
@@ -164,12 +159,12 @@ function localCouncil(payload){
     score -= 8; risks.push("Satıcı yoğunluğu kontrol edilmeli.");
   }
   score = Math.max(0, Math.min(100, Math.round(score)));
-  const decision = score >= 82 ? "GOLD" : score >= 70 ? "GÜÇLÜ ADAY" : score >= 55 ? "İNCELE" : score >= 40 ? "RİSKLİ" : "PASS";
   const missing = ["Canlı Trendyol/Shopify kanıtı","Satıcı yoğunluğu","Tedarikçi fiyatı / MOQ","GTIP / vergi / regülasyon","Marka/IP kontrolü"];
   return {
     mode:"local_fallback",
     real_ai:false,
-    score, decision,
+    score,
+    decision: decisionFromScore(score),
     summary:"OPENAI_API_KEY yoksa bu yerel ön analizdir. Uygulama satış sayısı veya maliyet uydurmaz.",
     gpt:"Ticari fırsat için önce talep, satıcı yoğunluğu ve net marj doğrulanmalı.",
     gemini:"Trend sinyali varsa kreatif üretilebilirliği incelenmeli; reklam yoğunluğu satış değildir.",
@@ -186,43 +181,43 @@ function localCouncil(payload){
 async function openAiCouncil(payload){
   if (!CONFIG.openaiKey) return localCouncil(payload);
 
-  const instructions = `
+  const prompt = `
 Sen Ürün Dedektifi AI Council koordinatörüsün.
-Felsefe: "Çok satanı değil, bizim satabileceğimiz çok satanı bul."
+Türkiye pazarı için ürün fırsatı analizi yap.
 
-Kurallar:
-- Exact satış sayısı yoksa asla uydurma.
-- Görünür satış/reklam sinyali exact satış değildir.
-- Reklam yoğunluğu satış değildir.
-- AI gerçek maliyet/risk/kanıt motorunu geçersiz kılamaz.
-- GTIP, vergi, regülasyon, marka/IP, tedarik maliyeti ve satıcı yoğunluğu eksikse AL kararı kilitli kalır.
-- Türkiye pazarını esas al.
-- Her AI görüşü en fazla 2 cümle olsun.
+MUTLAK KURAL:
+Sadece tek satırlık kısa JSON döndür. Markdown yok. Kod bloğu yok.
+Her metin alanı en fazla 120 karakter olsun.
+Array alanları en fazla 3 madde olsun.
+
+Alanlar:
+mode, real_ai, summary, score, decision, gpt, gemini, claude, deepseek, common_points, objections, missing_evidence, next_actions, judge
+
+Sabitler:
+mode="openai_council"
+real_ai=true
+decision sadece şunlardan biri: GOLD, GÜÇLÜ ADAY, İNCELE, RİSKLİ, PASS
+
+İlkeler:
+Exact satış sayısı uydurma.
+Reklam yoğunluğu satış değildir.
+GTIP/vergi/regülasyon/marka/tedarik eksikse AL kararı kilitlidir.
+
+Kullanıcı profili: ${JSON.stringify(payload.profile || {})}
+Mesaj: ${payload.message || ""}
+Ürün/metin: ${payload.productText || ""}
+Link: ${payload.productUrl || ""}
+
+JSON örneği:
+{"mode":"openai_council","real_ai":true,"summary":"Kısa özet","score":55,"decision":"İNCELE","gpt":"Ticari görüş","gemini":"Trend görüşü","claude":"Risk itirazı","deepseek":"Maliyet görüşü","common_points":["Kanıt gerekli"],"objections":["Rekabet bilinmiyor"],"missing_evidence":["Tedarik","GTIP"],"next_actions":["Pazar tara"],"judge":"İncele, AL kilitli"}
 `.trim();
-
-  const userInput = {
-    task: "Türkiye pazarı için ürün fırsatı analizi yap ve AI Council çıktısı üret.",
-    profile: payload.profile || {},
-    message: payload.message || "",
-    productText: payload.productText || "",
-    productUrl: payload.productUrl || ""
-  };
 
   try {
     const requestBody = {
       model: CONFIG.openaiModel,
-      instructions,
-      input: JSON.stringify(userInput),
+      input: prompt,
       store: false,
-      max_output_tokens: 3500,
-      text: {
-        format: {
-          type: "json_schema",
-          name: "urun_dedektifi_ai_council",
-          strict: true,
-          schema: COUNCIL_SCHEMA
-        }
-      }
+      max_output_tokens: 1400
     };
 
     const r = await fetch("https://api.openai.com/v1/responses", {
@@ -247,18 +242,12 @@ Kurallar:
     const txt = outputText(data);
     const parsed = parseJsonLoose(txt);
 
-    if (parsed) {
-      return normalizeCouncil(parsed);
-    }
+    if (parsed) return normalizeCouncil(parsed, txt);
 
-    return {
-      ...localCouncil(payload),
-      mode:"openai_parse_error_fallback",
-      real_ai:true,
-      openai_raw_text: txt.slice(0, 1200),
-      summary:"OpenAI cevap verdi ancak Structured Output parse edilemedi. Yerel güvenli karar motoru devreye girdi.",
-      missing_evidence:["Structured Output parse hatası", "Canlı pazar kanıtı", "Tedarik/GTIP/regülasyon kanıtı"]
-    };
+    const extracted = normalizeCouncil({}, txt);
+    extracted.mode = "openai_extracted";
+    extracted.openai_raw_text = txt.slice(0, 900);
+    return extracted;
   } catch(e) {
     return {...localCouncil(payload), mode:"openai_error_fallback", openai_error:e?.message || "OpenAI bağlantı hatası"};
   }
@@ -302,7 +291,7 @@ async function analyze(req, res, body, params){
       source:"AI Oda",
       source_provider:council.real_ai ? "openai" : "local_fallback",
       exact_sales_count:null,
-      confidence:council.real_ai ? 0.78 : 0.45,
+      confidence:council.real_ai ? 0.80 : 0.45,
       score:{
         opportunity_score:council.score,
         decision:council.decision,
@@ -340,7 +329,7 @@ function status(){
     env:{
       openai:!!CONFIG.openaiKey,
       openai_model:CONFIG.openaiModel,
-      structured_outputs:true,
+      compact_ai:true,
       api_token_required:!!CONFIG.apiToken,
       database_next:!!CONFIG.databaseUrl,
       serpapi_next:!!CONFIG.serpapiKey,
