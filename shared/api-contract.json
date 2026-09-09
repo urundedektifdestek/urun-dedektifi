@@ -1,0 +1,16 @@
+{
+  "app": "Ürün Dedektifi",
+  "version": "m1",
+  "endpoints": {
+    "status": "GET /",
+    "aiRoom": "POST /ai-room",
+    "scan": "POST /scan",
+    "mobileCompat": "POST /",
+    "decision": "POST /decision"
+  },
+  "principles": [
+    "Exact satış sayısı yoksa uydurulmaz",
+    "Reklam yoğunluğu satış değildir",
+    "Kritik kanıt eksikse AL kararı kilitli kalır"
+  ]
+}
