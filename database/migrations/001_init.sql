@@ -1,59 +1,49 @@
--- Ürün Dedektifi Milestone 1 Database Schema
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
-create table if not exists analyses (
-  id text primary key,
-  created_at timestamptz default now(),
-  user_id text,
-  query text,
-  input jsonb,
-  ai_council jsonb,
-  evidence_gate jsonb,
-  products jsonb
+CREATE TABLE IF NOT EXISTS analyses (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL DEFAULT 'demo',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  message TEXT,
+  product_url TEXT,
+  product_text TEXT,
+  source TEXT,
+  score INTEGER,
+  decision TEXT,
+  ai_council JSONB NOT NULL DEFAULT '{}'::jsonb,
+  evidence_gate JSONB NOT NULL DEFAULT '{}'::jsonb,
+  products JSONB NOT NULL DEFAULT '[]'::jsonb,
+  raw JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 
-create table if not exists decisions (
-  id text primary key,
-  created_at timestamptz default now(),
-  user_id text,
-  product_id text,
-  decision text,
-  note text,
-  payload jsonb
+CREATE INDEX IF NOT EXISTS idx_analyses_user_created ON analyses(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_analyses_score ON analyses(score DESC);
+
+CREATE TABLE IF NOT EXISTS saved_products (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL DEFAULT 'demo',
+  analysis_id TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  title TEXT NOT NULL,
+  source TEXT,
+  product_url TEXT,
+  score INTEGER,
+  decision TEXT,
+  product JSONB NOT NULL DEFAULT '{}'::jsonb,
+  notes TEXT
 );
 
-create table if not exists products (
-  id text primary key,
-  created_at timestamptz default now(),
-  first_seen_at timestamptz default now(),
-  last_seen_at timestamptz default now(),
-  title text,
-  source text,
-  source_url text,
-  exact_sales_count integer,
-  visible_sales_signal text,
-  confidence numeric,
-  payload jsonb
+CREATE INDEX IF NOT EXISTS idx_saved_user_created ON saved_products(user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS decisions (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL DEFAULT 'demo',
+  analysis_id TEXT,
+  product_id TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  decision TEXT,
+  notes TEXT,
+  payload JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 
-create table if not exists source_observations (
-  id text primary key,
-  created_at timestamptz default now(),
-  product_id text,
-  source text,
-  method text,
-  url text,
-  confidence numeric,
-  payload jsonb
-);
-
-create table if not exists notifications (
-  id text primary key,
-  created_at timestamptz default now(),
-  user_id text,
-  level text,
-  title text,
-  body text,
-  dedupe_key text,
-  delivered_at timestamptz,
-  payload jsonb
-);
+CREATE INDEX IF NOT EXISTS idx_decisions_user_created ON decisions(user_id, created_at DESC);
