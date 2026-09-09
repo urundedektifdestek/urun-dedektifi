@@ -1,12 +1,15 @@
 {
   "name": "urun-dedektifi-api",
-  "version": "1.3.0",
+  "version": "2.1.0",
   "private": true,
   "type": "module",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
     "dev": "node src/server.js"
+  },
+  "dependencies": {
+    "pg": "^8.13.1"
   },
   "engines": {
     "node": ">=20"
