@@ -6,14 +6,15 @@ const PORT = Number(process.env.PORT || 8080);
 
 const CONFIG = {
   app: process.env.PUBLIC_API_NAME || "Ürün Dedektifi API",
-  version: "2.3.0-m2-trendyol-link-adapter",
+  version: "2.5.0-m2-final-consolidated",
   openaiKey: process.env.OPENAI_API_KEY || "",
   openaiModel: process.env.OPENAI_MODEL || "gpt-5-mini",
   apiToken: process.env.API_TOKEN || "",
   databaseUrl: process.env.DATABASE_URL || "",
+  linkFetchEnabled: (process.env.LINK_FETCH_ENABLED || "true").toLowerCase() !== "false",
   serpapiKey: process.env.SERPAPI_KEY || "",
   apifyToken: process.env.APIFY_TOKEN || "",
-  linkFetchEnabled: (process.env.LINK_FETCH_ENABLED || "true").toLowerCase() !== "false"
+  defaultUserId: process.env.DEFAULT_USER_ID || "demo"
 };
 
 const memory = { analyses: [], saved: [], decisions: [], created_at: new Date().toISOString() };
@@ -23,6 +24,7 @@ function id(prefix){ return `${prefix}_${Date.now()}_${Math.random().toString(36
 function safeText(v){ return v === null || v === undefined ? "" : String(v).trim(); }
 function safeInt(v, fallback=0){ const n = Number(v); return Number.isFinite(n) ? Math.round(n) : fallback; }
 function uniq(arr){ return [...new Set((arr || []).map(safeText).filter(Boolean))]; }
+function clamp(n,min,max,fallback){ const x = Number(n); return Number.isFinite(x) ? Math.max(min, Math.min(max, x)) : fallback; }
 
 let pool = null;
 let dbReady = false;
@@ -64,6 +66,7 @@ async function initDb(){
       raw JSONB NOT NULL DEFAULT '{}'::jsonb
     );
     CREATE INDEX IF NOT EXISTS idx_analyses_user_created ON analyses(user_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_analyses_source_created ON analyses(source, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_analyses_score ON analyses(score DESC);
 
     CREATE TABLE IF NOT EXISTS saved_products (
@@ -128,6 +131,10 @@ async function readBody(req){
   });
 }
 
+function getUserId(req, url, body={}){
+  return safeText(body.user_id || body.userId || url?.searchParams?.get("user_id") || req.headers["x-user-id"] || CONFIG.defaultUserId) || "demo";
+}
+
 function checkAuth(req){
   if (!CONFIG.apiToken) return null;
   const auth = safeText(req.headers.authorization);
@@ -135,40 +142,50 @@ function checkAuth(req){
   return token === CONFIG.apiToken ? null : { ok:false, error:"unauthorized" };
 }
 
-/* -------------------- Public product link adapter -------------------- */
+/* -------------------- Product Link Evidence Adapter -------------------- */
 
 function detectSource(productUrl){
   const u = safeText(productUrl).toLowerCase();
-  if (u.includes("shopify")) return "Shopify";
-  if (u.includes("trendyol")) return "Trendyol";
-  if (u.includes("etsy")) return "Etsy";
-  if (u.includes("amazon")) return "Amazon";
-  if (u.includes("alibaba")) return "Alibaba";
+  if (u.includes("trendyol.")) return "Trendyol";
+  if (u.includes("shopify") || u.includes("myshopify.com")) return "Shopify";
+  if (u.includes("etsy.")) return "Etsy";
+  if (u.includes("amazon.")) return "Amazon";
+  if (u.includes("alibaba.")) return "Alibaba";
   return productUrl ? "Public Link" : "AI Oda";
 }
 
 function isHttpUrl(v){
-  try {
-    const u = new URL(v);
-    return u.protocol === "http:" || u.protocol === "https:";
-  } catch { return false; }
+  try { const u = new URL(v); return u.protocol === "http:" || u.protocol === "https:"; }
+  catch { return false; }
 }
 
 function decodeEntities(s){
   return safeText(s)
-    .replace(/&quot;/g,'"')
-    .replace(/&#34;/g,'"')
-    .replace(/&#x27;/g,"'")
-    .replace(/&#39;/g,"'")
-    .replace(/&amp;/g,"&")
-    .replace(/&lt;/g,"<")
-    .replace(/&gt;/g,">")
-    .replace(/\s+/g," ")
-    .trim();
+    .replace(/&quot;/g,'"').replace(/&#34;/g,'"')
+    .replace(/&#x27;/g,"'").replace(/&#39;/g,"'")
+    .replace(/&amp;/g,"&").replace(/&lt;/g,"<").replace(/&gt;/g,">")
+    .replace(/\s+/g," ").trim();
 }
 
 function stripTags(s){
-  return decodeEntities(safeText(s).replace(/<script[\s\S]*?<\/script>/gi," ").replace(/<style[\s\S]*?<\/style>/gi," ").replace(/<[^>]+>/g," "));
+  return decodeEntities(safeText(s)
+    .replace(/<script[\s\S]*?<\/script>/gi," ")
+    .replace(/<style[\s\S]*?<\/style>/gi," ")
+    .replace(/<[^>]+>/g," "));
+}
+
+function flattenClean(v, max=900){
+  if (v === null || v === undefined) return "";
+  if (typeof v === "string") return decodeEntities(v).replace(/\s+/g," ").trim().slice(0,max);
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
+  if (Array.isArray(v)) return v.map(x => flattenClean(x, 220)).filter(Boolean).slice(0,6).join(" • ").slice(0,max);
+  if (typeof v === "object") {
+    return Object.entries(v).map(([k,val]) => {
+      const f = flattenClean(val, 260);
+      return f ? `${k}: ${f}` : "";
+    }).filter(Boolean).slice(0,8).join(" | ").slice(0,max);
+  }
+  return String(v).trim().slice(0,max);
 }
 
 function meta(html, key){
@@ -224,20 +241,64 @@ function imageListFromJsonLd(product){
   return [];
 }
 
-function findImageUrls(html, source){
-  const urls = [];
-  const imgRe = /https?:\/\/[^"'<>\\\s]+\.(?:jpg|jpeg|png|webp)(?:\?[^"'<>\\\s]*)?/gi;
-  let m;
-  while ((m = imgRe.exec(html)) !== null) urls.push(m[0]);
+function normalizeImageUrl(url){
+  let u = safeText(url)
+    .replace(/\\u002F/g, "/")
+    .replace(/\\/g, "")
+    .replace(/&amp;/g, "&")
+    .replace(/^"+|"+$/g, "")
+    .trim();
+  return u;
+}
 
-  const cdnRe = /https?:\/\/[^"'<>\\\s]*dsmcdn\.com[^"'<>\\\s]*/gi;
-  while ((m = cdnRe.exec(html)) !== null) {
-    if (/\.(jpg|jpeg|png|webp)/i.test(m[0])) urls.push(m[0]);
+function isLikelyProductImage(url, source){
+  const u = safeText(url).toLowerCase();
+  if (!u) return false;
+
+  const bad = [
+    "apple-icon", "splash", "favicon", "logo", "sprite", "placeholder",
+    "default-image", "app-icon", "google-play", "appstore",
+    "/sfweb/images/", "/web/images/", "social", "footer", "header"
+  ];
+  if (bad.some(x => u.includes(x))) return false;
+  if (!/\.(jpg|jpeg|png|webp)(\?|$)/i.test(u)) return false;
+
+  if (source === "Trendyol") {
+    if (!u.includes("cdn.dsmcdn.com")) return false;
+    if (!u.includes("/prod/")) return false;
+    if (!/(org_zoom|zoom|product|prod|ty\d+)/i.test(url)) return false;
   }
 
+  return true;
+}
+
+function scoreImageUrl(url, source){
+  const u = safeText(url).toLowerCase();
+  let score = 0;
+  if (u.includes("cdn.dsmcdn.com")) score += 10;
+  if (u.includes("/prod/")) score += 20;
+  if (u.includes("org_zoom")) score += 30;
+  if (u.includes("zoom")) score += 10;
+  if (u.includes("/1_") || u.includes("/1_org") || u.includes("-1-")) score += 3;
+  if (u.includes("apple-icon") || u.includes("splash") || u.includes("/sfweb/images/")) score -= 100;
+  return score;
+}
+
+function findImageUrls(html, source){
+  const urls = [];
+  const genericRe = /https?:\/\/[^"'<>\\\s]+\.(?:jpg|jpeg|png|webp)(?:\?[^"'<>\\\s]*)?/gi;
+  let m;
+  while ((m = genericRe.exec(html)) !== null) urls.push(normalizeImageUrl(m[0]));
+  const dsmRe = /https?:\/\/[^"'<>\\\s]*cdn\.dsmcdn\.com[^"'<>\\\s]*/gi;
+  while ((m = dsmRe.exec(html)) !== null) {
+    const candidate = normalizeImageUrl(m[0]);
+    if (/\.(jpg|jpeg|png|webp)/i.test(candidate)) urls.push(candidate);
+  }
   return uniq(urls)
-    .filter(u => !/logo|sprite|favicon/i.test(u))
-    .slice(0, 12);
+    .map(normalizeImageUrl)
+    .filter(u => isLikelyProductImage(u, source))
+    .sort((a,b) => scoreImageUrl(b, source) - scoreImageUrl(a, source))
+    .slice(0, 16);
 }
 
 function extractPrice(html, product){
@@ -248,6 +309,7 @@ function extractPrice(html, product){
 
   const candidates = [
     /"sellingPrice"\s*:\s*"?([0-9]+(?:[.,][0-9]+)?)"?/i,
+    /"discountedPrice"\s*:\s*"?([0-9]+(?:[.,][0-9]+)?)"?/i,
     /"price"\s*:\s*"?([0-9]+(?:[.,][0-9]+)?)"?/i,
     /([0-9]{1,3}(?:\.[0-9]{3})*(?:,[0-9]{2})?)\s*TL/i
   ];
@@ -258,14 +320,51 @@ function extractPrice(html, product){
   return null;
 }
 
-function extractRating(product){
+function extractRating(product, html=""){
   const rating = product?.aggregateRating;
-  if (!rating) return null;
-  return {
-    rating_value: rating.ratingValue ? String(rating.ratingValue) : null,
-    review_count: rating.reviewCount || rating.ratingCount ? Number(rating.reviewCount || rating.ratingCount) : null,
-    evidence: "json_ld_aggregateRating"
-  };
+  if (rating) {
+    return {
+      rating_value: rating.ratingValue ? String(rating.ratingValue) : null,
+      review_count: rating.reviewCount || rating.ratingCount ? Number(rating.reviewCount || rating.ratingCount) : null,
+      evidence: "json_ld_aggregateRating"
+    };
+  }
+
+  const ratingValue = html.match(/"ratingValue"\s*:\s*"?([0-9.]+)"?/i)?.[1] || "";
+  const reviewCount = html.match(/"reviewCount"\s*:\s*"?([0-9]+)"?/i)?.[1] || html.match(/"ratingCount"\s*:\s*"?([0-9]+)"?/i)?.[1] || "";
+  if (ratingValue || reviewCount) {
+    return {
+      rating_value: ratingValue || null,
+      review_count: reviewCount ? Number(reviewCount) : null,
+      evidence: "html_regex_rating"
+    };
+  }
+  return null;
+}
+
+function extractBrand(product, html=""){
+  const b = product?.brand;
+  if (b) {
+    if (typeof b === "string") return decodeEntities(b);
+    if (b.name) return decodeEntities(b.name);
+  }
+  const m = html.match(/"brand"\s*:\s*\{[^}]*"name"\s*:\s*"([^"]+)"/i) || html.match(/"brandName"\s*:\s*"([^"]+)"/i);
+  return m?.[1] ? decodeEntities(m[1]) : "";
+}
+
+function extractSellerHint(html){
+  const patterns = [
+    /"merchantName"\s*:\s*"([^"]+)"/i,
+    /"sellerName"\s*:\s*"([^"]+)"/i,
+    /"supplierName"\s*:\s*"([^"]+)"/i,
+    /"storeName"\s*:\s*"([^"]+)"/i,
+    /Satıcı:\s*([^<\n]+)/i
+  ];
+  for (const p of patterns) {
+    const m = html.match(p);
+    if (m?.[1]) return decodeEntities(m[1]);
+  }
+  return "";
 }
 
 function extractVisibleSalesSignal(html){
@@ -288,18 +387,16 @@ function extractVisibleSalesSignal(html){
   return null;
 }
 
-function extractSellerHint(html){
-  const patterns = [
-    /"merchantName"\s*:\s*"([^"]+)"/i,
-    /"sellerName"\s*:\s*"([^"]+)"/i,
-    /"supplierName"\s*:\s*"([^"]+)"/i,
-    /"storeName"\s*:\s*"([^"]+)"/i
-  ];
-  for (const p of patterns) {
-    const m = html.match(p);
-    if (m?.[1]) return decodeEntities(m[1]);
-  }
-  return "";
+function extractCategoryHints(html){
+  const out = [];
+  const crumbs = [];
+  const crumbRe = /"name"\s*:\s*"([^"]{2,80})"\s*,\s*"item"/gi;
+  let m;
+  while((m = crumbRe.exec(html)) !== null) crumbs.push(decodeEntities(m[1]));
+  if (crumbs.length) out.push(...crumbs);
+  const metaSection = meta(html, "product:section") || meta(html, "category");
+  if (metaSection) out.push(metaSection);
+  return uniq(out).slice(0, 8);
 }
 
 async function fetchWithTimeout(url, ms=15000){
@@ -331,17 +428,23 @@ async function readProductEvidence(productUrl){
     fetched_at:now(),
     title:"",
     description:"",
+    brand_name:"",
+    seller_name:"",
+    categories:[],
     images:[],
-    video:null,
+    removed_non_product_images:[],
+    product_video:null,
     price:null,
     rating:null,
-    seller_name:"",
     visible_sales_signal:null,
     exact_sales_count:null,
     reviews:[],
     review_status:"not_available",
     limitations:[],
-    evidence_quality:"none"
+    evidence_quality:"none",
+    evidence_summary: {
+      title:false, description:false, images:false, price:false, rating:false, seller:false, visible_sales_signal:false
+    }
   };
 
   if (!url) return {...base, error:"url_empty", limitations:["Ürün linki yok."]};
@@ -369,36 +472,63 @@ async function readProductEvidence(productUrl){
     const ogDesc = meta(html,"og:description") || meta(html,"description");
     const ogImage = meta(html,"og:image") || meta(html,"twitter:image");
 
-    const title = flattenClean(productLd?.name || ogTitle || titleTag(html));
-    const description = flattenClean(productLd?.description || ogDesc);
-    const images = uniq([ogImage, ...imageListFromJsonLd(productLd), ...findImageUrls(html, source)]).slice(0, 12);
+    const title = flattenClean(productLd?.name || ogTitle || titleTag(html), 500);
+    const description = flattenClean(productLd?.description || ogDesc, 900);
+
+    const rawImages = uniq([ogImage, ...imageListFromJsonLd(productLd), ...findImageUrls(html, source)]).map(normalizeImageUrl);
+    const images = rawImages
+      .filter(u => isLikelyProductImage(u, source))
+      .sort((a,b) => scoreImageUrl(b, source) - scoreImageUrl(a, source))
+      .slice(0, 12);
+    const removed_non_product_images = rawImages.filter(u => !isLikelyProductImage(u, source)).slice(0, 20);
+
     const price = extractPrice(html, productLd);
-    const rating = extractRating(productLd);
+    const rating = extractRating(productLd, html);
     const visibleSales = extractVisibleSalesSignal(html);
     const seller = extractSellerHint(html);
+    const brand = extractBrand(productLd, html);
+    const categories = extractCategoryHints(html);
 
     const limitations = [];
-    if (!images.length) limitations.push("Fotoğraf linki bulunamadı veya sayfa dinamik yüklüyor.");
+    if (!images.length) limitations.push("Ürün fotoğrafı bulunamadı veya sayfa dinamik yüklüyor.");
+    if (removed_non_product_images.length) limitations.push(`${removed_non_product_images.length} adet ürün dışı ikon/splash görseli filtrelendi.`);
     if (!rating) limitations.push("Puan/yorum sayısı bulunamadı.");
+    if (!seller) limitations.push("Satıcı adı güvenilir şekilde bulunamadı.");
     if (!visibleSales) limitations.push("Görünür satış sinyali bulunamadı.");
-    limitations.push("Yorum metinleri bu aşamada çekilmiyor; yorum adapterı M2.4/M2.5 aşamasında bağlanacak.");
+    limitations.push("Yorum metinleri bu aşamada çekilmiyor; yorum adapterı sonraki aşamada bağlanacak.");
     limitations.push("Exact satış sayısı üretilmedi.");
+
+    const evidence_summary = {
+      title:!!title,
+      description:!!description,
+      images:images.length > 0,
+      price:!!price,
+      rating:!!rating,
+      seller:!!seller,
+      visible_sales_signal:!!visibleSales
+    };
+    const score = Object.values(evidence_summary).filter(Boolean).length;
+    const evidence_quality = score >= 5 ? "high" : score >= 3 ? "medium" : score >= 1 ? "low" : "none";
 
     return {
       ...base,
       ok:true,
       title,
       description,
+      brand_name:brand,
+      seller_name:seller,
+      categories,
       images,
+      removed_non_product_images,
       product_video:null,
       price,
       rating,
-      seller_name:seller,
       visible_sales_signal:visibleSales,
       exact_sales_count:null,
       review_status:"pending_review_adapter",
       limitations,
-      evidence_quality: [title, description, images.length, price, rating, visibleSales].filter(Boolean).length >= 3 ? "medium" : "low"
+      evidence_quality,
+      evidence_summary
     };
   } catch(e) {
     return {
@@ -408,20 +538,6 @@ async function readProductEvidence(productUrl){
       limitations:["Sayfa okunamadı veya kaynak engelledi.", "Bu aşama güvenli fallback ile devam eder."]
     };
   }
-}
-
-function flattenClean(v, max=900){
-  if (v === null || v === undefined) return "";
-  if (typeof v === "string") return v.replace(/\s+/g," ").trim().slice(0,max);
-  if (typeof v === "number" || typeof v === "boolean") return String(v);
-  if (Array.isArray(v)) return v.map(x => flattenClean(x, 220)).filter(Boolean).slice(0,6).join(" • ").slice(0,max);
-  if (typeof v === "object") {
-    return Object.entries(v).map(([k,val]) => {
-      const f = flattenClean(val, 260);
-      return f ? `${k}: ${f}` : "";
-    }).filter(Boolean).slice(0,8).join(" | ").slice(0,max);
-  }
-  return String(v).trim().slice(0,max);
 }
 
 /* -------------------- AI Council -------------------- */
@@ -452,10 +568,12 @@ function extractString(src,key){
   if(!m) return "";
   try { return JSON.parse(`"${m[1]}"`); } catch { return m[1]; }
 }
+
 function extractNumber(src,key){
   const m = safeText(src).match(new RegExp(`"${key}"\\s*:\\s*(\\d+)`));
   return m ? Number(m[1]) : null;
 }
+
 function cleanItem(x){
   const s = flattenClean(x, 260).replace(/^[\s,:;{}\[\]"]+|[\s,:;{}\[\]"]+$/g, "").trim();
   if (!s || s.length < 6) return "";
@@ -463,6 +581,7 @@ function cleanItem(x){
   if (s.includes("\n{") || s === ":" || s === ",") return "";
   return s.slice(0,260);
 }
+
 function cleanArray(value, fallback=[]){
   let arr = Array.isArray(value) ? value : value ? [value] : [];
   const out = [];
@@ -476,6 +595,7 @@ function cleanArray(value, fallback=[]){
   }
   return out.slice(0,5);
 }
+
 function extractArray(src,key){
   const re = new RegExp(`"${key}"\\s*:\\s*\\[([\\s\\S]*?)\\]`, "s");
   const m = safeText(src).match(re);
@@ -485,6 +605,7 @@ function extractArray(src,key){
   while((im=itemRe.exec(m[1]))!==null){ try{vals.push(JSON.parse(`"${im[1]}"`));}catch{vals.push(im[1]);} }
   return cleanArray(vals);
 }
+
 function decisionFromScore(score){ return score>=82?"GOLD":score>=70?"GÜÇLÜ ADAY":score>=55?"İNCELE":score>=40?"RİSKLİ":"PASS"; }
 
 const fallbackCommon = ["Kanıt olmadan winner denmez", "Tedarik maliyeti şart", "Satıcı yoğunluğu ölçülmeli"];
@@ -513,7 +634,7 @@ function normalizeCouncil(raw, txt=""){
     missing_evidence:cleanArray(c.missing_evidence, extractArray(txt,"missing_evidence").concat(fallbackMissing)),
     next_actions:cleanArray(c.next_actions, extractArray(txt,"next_actions")),
     judge:flattenClean(c.judge, 600) || extractString(txt,"judge") || "Kritik kanıtlar tamamlanmadan AL kararı kilitli.",
-    alibaba_research:flattenClean(c.alibaba_research, 700) || extractString(txt,"alibaba_research") || "Canlı Alibaba araştırması M2 adapter ile yapılacak.",
+    alibaba_research:flattenClean(c.alibaba_research, 700) || extractString(txt,"alibaba_research") || "Canlı Alibaba araştırması sonraki adapter ile yapılacak.",
     product_strengths:cleanArray(c.product_strengths, extractArray(txt,"product_strengths")),
     review_insights:cleanArray(c.review_insights, extractArray(txt,"review_insights")),
     visual_insights:cleanArray(c.visual_insights, extractArray(txt,"visual_insights"))
@@ -528,28 +649,26 @@ function normalizeCouncil(raw, txt=""){
 }
 
 function localCouncil(productEvidence=null){
-  const extraMissing = productEvidence?.ok
-    ? ["Yorum metinleri", "Satıcı yoğunluğu", "Canlı Alibaba maliyeti"]
-    : fallbackMissing;
+  const hasEvidence = !!productEvidence?.ok;
   return {
     mode:"local_fallback",
     real_ai:false,
-    score: productEvidence?.ok ? 58 : 55,
+    score: hasEvidence ? 58 : 55,
     decision:"İNCELE",
-    summary: productEvidence?.ok ? `Link okundu: ${productEvidence.title || productEvidence.source}. AI yoksa yerel ön analiz.` : "Yerel güvenli ön analiz. Canlı kaynaklar bağlanınca derin veriyle zenginleşir.",
+    summary: hasEvidence ? `Link okundu: ${productEvidence.title || productEvidence.source}. AI yoksa yerel ön analiz.` : "Yerel güvenli ön analiz. Canlı kaynaklar bağlanınca derin veriyle zenginleşir.",
     gpt:"Niş fırsat olabilir; hedef kitle ve kullanım senaryosu netleştirilmeli.",
-    gemini:"Trend olumlu olabilir; sürdürülebilirlik/Montessori gibi açıları kreatif avantaj sağlar.",
-    claude:"Kimyasal test, yaş grubu güvenliği, marka/IP ve iade riski kontrol edilmeden AL kilitli.",
+    gemini:"Trend olumlu olabilir; kreatif içerik ve ürün hikayesi avantaj sağlar.",
+    claude:"Regülasyon, kalite, IP ve iade riski kontrol edilmeden AL kilitli.",
     deepseek:"Alibaba canlı maliyet araştırması için adapter gerekir; MOQ, birim fiyat, navlun ve paket hacmi toplanmalı.",
     common_points:fallbackCommon,
     objections:["Canlı veri eksik","Regülasyon belirsiz"],
-    missing_evidence:extraMissing,
-    next_actions:["Alibaba adapter bağla","Trendyol/Shopify ürün görsellerini çek","Yorumları sınıflandır"],
+    missing_evidence: hasEvidence ? ["Yorum metinleri", "Satıcı yoğunluğu", "Canlı Alibaba maliyeti", "GTIP/vergi/regülasyon"] : fallbackMissing,
+    next_actions:["Yorum adapterı bağla","Rakip/satıcı yoğunluğunu ölç","Tedarik maliyeti topla"],
     judge:"İNCELE; AL kararı Evidence Gate ile kilitli.",
-    alibaba_research:"Canlı Alibaba araması M2'de bağlanacak.",
-    product_strengths:["Niş hedef kitle olabilir"],
-    review_insights:["Yorum çekimi bekliyor"],
-    visual_insights: productEvidence?.images?.length ? [`${productEvidence.images.length} görsel linki yakalandı.`] : ["Foto/video çekimi bekliyor"]
+    alibaba_research:"Canlı Alibaba araması sonraki aşamada bağlanacak.",
+    product_strengths:hasEvidence ? ["Ürün sayfasından temel kanıt toplandı"] : ["Niş hedef kitle olabilir"],
+    review_insights:["Yorum metni çekimi bekliyor"],
+    visual_insights:hasEvidence && productEvidence.images?.length ? [`${productEvidence.images.length} gerçek ürün görseli yakalandı.`] : ["Foto/video çekimi bekliyor"]
   };
 }
 
@@ -557,7 +676,9 @@ function buildAiPrompt(payload, productEvidence){
   return `
 Sen Ürün Dedektifi AI Savaş Odası'sın. Cevabın SADECE geçerli JSON olacak.
 
-Çok önemli format kuralları:
+Ürün felsefesi: "Çok satanı değil, bizim satabileceğimiz çok satanı bul."
+
+Format kuralları:
 - gpt, gemini, claude, deepseek, judge, alibaba_research alanları STRING olacak. Obje veya array yapma.
 - common_points, objections, missing_evidence, next_actions, product_strengths, review_insights, visual_insights alanları ARRAY OF STRING olacak.
 - real_ai true olacak.
@@ -565,17 +686,18 @@ Sen Ürün Dedektifi AI Savaş Odası'sın. Cevabın SADECE geçerli JSON olacak
 - decision sadece şunlardan biri olacak: GOLD, GÜÇLÜ ADAY, İNCELE, RİSKLİ, PASS
 - Markdown ve kod bloğu yok.
 
-Derinlik kuralı:
-Her rol 3-5 cümlelik güçlü tartışma yazsın.
-- gpt: ticari fırsat, niş, hedef kitle, ürünün güçlü yönleri
-- gemini: trend, pazar, kreatif, sosyal medya, sürdürülebilirlik
-- claude: acımasız risk itirazı, kalite, iade, regülasyon, marka/IP
+Roller:
+- gpt: ticari fırsat, niş, hedef kitle, ürünün güçlü yönleri.
+- gemini: trend, pazar, kreatif, sosyal medya, sürdürülebilirlik.
+- claude: acımasız risk itirazı, kalite, iade, regülasyon, marka/IP.
 - deepseek: Alibaba/tedarik/maliyet bakışı. Canlı Alibaba verisi yoksa "canlı veri yok" de; MOQ, birim fiyat, navlun, paket hacmi, numune, kalite kontrol, yerli üretim alternatifini tartış. Maliyet uydurma.
 
-Kanıt kuralı:
-Ürün fotoğrafı, yorum, video, satıcı sayısı, satış sinyali yoksa açıkça "kanıt yok" de.
-Exact satış sayısı uydurma. Reklam yoğunluğu satış değildir.
-Eğer ürün_link_kanıtı içinde fiyat/görsel/puan varsa bunu kanıt olarak kullan; yoksa uydurma.
+Kanıt kuralları:
+- Ürün fotoğrafı, yorum, video, satıcı sayısı, satış sinyali yoksa açıkça "kanıt yok" de.
+- exact_sales_count uydurma.
+- Reklam yoğunluğu satış değildir.
+- visible_sales_signal varsa exact satış gibi davranma.
+- product_evidence içindeki title/price/rating/images alanlarını kanıt olarak kullan; olmayanı uydurma.
 
 JSON şeması:
 {
@@ -605,7 +727,7 @@ Mesaj: ${payload.message || ""}
 Link: ${payload.productUrl || ""}
 Metin/Yorum: ${payload.productText || ""}
 
-ürün_link_kanıtı:
+product_evidence:
 ${JSON.stringify(productEvidence || null, null, 2)}
 `.trim();
 }
@@ -642,7 +764,7 @@ async function openAiCouncil(payload, productEvidence=null){
 
 /* -------------------- Persistence -------------------- */
 
-async function saveAnalysisToDb(result){
+async function saveAnalysisToDb(result, userId){
   if (!pool || !dbReady) return {saved:false, reason: dbError || "db_not_ready"};
   const first = result.products?.[0] || {};
   const score = safeInt(result.ai_council?.score ?? first?.score?.opportunity_score, null);
@@ -655,7 +777,7 @@ async function saveAnalysisToDb(result){
      ON CONFLICT (id) DO NOTHING`,
     [
       result.id,
-      "demo",
+      userId,
       result.input.message,
       result.input.productUrl,
       result.input.productText,
@@ -671,10 +793,11 @@ async function saveAnalysisToDb(result){
   return {saved:true};
 }
 
-async function analyze(req,res,body,params){
+async function analyze(req,res,body,params,urlObj){
   const deny = checkAuth(req); if(deny) return send(res,401,deny);
-
   await dbInitPromise;
+
+  const userId = getUserId(req, urlObj, body);
   const message = safeText(body.message || body.question || body.query || params.get("message") || params.get("q"));
   const productText = safeText(body.productText || body.pasted || body.text || params.get("productText") || params.get("text"));
   const productUrl = safeText(body.productUrl || body.url || params.get("url"));
@@ -704,6 +827,7 @@ async function analyze(req,res,body,params){
     app:CONFIG.app,
     version:CONFIG.version,
     created_at:now(),
+    user_id:userId,
     input:{message,productText,productUrl,profile},
     product_evidence:productEvidence,
     ai_council:council,
@@ -721,9 +845,11 @@ async function analyze(req,res,body,params){
       source,
       source_provider:council.real_ai ? "openai" : "local_fallback",
       url:productUrl,
+      brand_name:productEvidence?.brand_name || "",
+      seller_name:productEvidence?.seller_name || "",
+      categories:productEvidence?.categories || [],
       price:productEvidence?.price || null,
       rating:productEvidence?.rating || null,
-      seller_name:productEvidence?.seller_name || "",
       visible_sales_signal:productEvidence?.visible_sales_signal || null,
       exact_sales_count:null,
       images:productEvidence?.images || [],
@@ -742,7 +868,7 @@ async function analyze(req,res,body,params){
       visible_sales_signal:"Görünür satış sinyali exact satış sayısı değildir.",
       ads_policy:"Reklam yoğunluğu satış değildir.",
       evidence_gate:"Kritik kanıt eksikse AL kararı kilitli kalır.",
-      live_alibaba:"Canlı Alibaba maliyeti M2.5 adapter ile bağlanacak."
+      live_alibaba:"Canlı Alibaba maliyeti ayrı adapter ile bağlanacak."
     }
   };
 
@@ -750,7 +876,7 @@ async function analyze(req,res,body,params){
   memory.analyses = memory.analyses.slice(0,100);
 
   try {
-    const saved = await saveAnalysisToDb(result);
+    const saved = await saveAnalysisToDb(result, userId);
     result.persistence = {enabled:!!pool, db_ready:dbReady, ...saved};
   } catch(e) {
     result.persistence = {enabled:!!pool, db_ready:false, saved:false, error:e?.message || "db_save_error"};
@@ -763,6 +889,7 @@ async function analyze(req,res,body,params){
 async function listHistory(req,res,url){
   const deny = checkAuth(req); if(deny) return send(res,401,deny);
   await dbInitPromise;
+  const userId = getUserId(req, url, {});
   const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit") || 30)));
   if (pool && dbReady) {
     const r = await dbQuery(
@@ -771,16 +898,17 @@ async function listHistory(req,res,url){
        WHERE user_id=$1
        ORDER BY created_at DESC
        LIMIT $2`,
-      ["demo", limit]
+      [userId, limit]
     );
     return send(res,200,{ok:true,source:"postgres",count:r.rows.length,items:r.rows});
   }
   return send(res,200,{ok:true,source:"memory",count:memory.analyses.length,items:memory.analyses.slice(0,limit)});
 }
 
-async function saveProduct(req,res,body){
+async function saveProduct(req,res,body,url){
   const deny = checkAuth(req); if(deny) return send(res,401,deny);
   await dbInitPromise;
+  const userId = getUserId(req, url, body);
 
   const product = body.product || body;
   const productId = safeText(product.id) || id("saved_product");
@@ -793,7 +921,7 @@ async function saveProduct(req,res,body){
 
   const item = {
     id: productId,
-    user_id:"demo",
+    user_id:userId,
     analysis_id:analysisId,
     created_at:now(),
     title, source, product_url:productUrl, score, decision,
@@ -829,6 +957,7 @@ async function saveProduct(req,res,body){
 async function listSaved(req,res,url){
   const deny = checkAuth(req); if(deny) return send(res,401,deny);
   await dbInitPromise;
+  const userId = getUserId(req, url, {});
   const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit") || 30)));
   if (pool && dbReady) {
     const r = await dbQuery(
@@ -837,20 +966,21 @@ async function listSaved(req,res,url){
        WHERE user_id=$1
        ORDER BY created_at DESC
        LIMIT $2`,
-      ["demo", limit]
+      [userId, limit]
     );
     return send(res,200,{ok:true,source:"postgres",count:r.rows.length,items:r.rows});
   }
   return send(res,200,{ok:true,source:"memory",count:memory.saved.length,items:memory.saved.slice(0,limit)});
 }
 
-async function saveDecision(req,res,body){
+async function saveDecision(req,res,body,url){
   const deny = checkAuth(req); if(deny) return send(res,401,deny);
   await dbInitPromise;
+  const userId = getUserId(req, url, body);
 
   const item = {
     id:id("decision"),
-    user_id:"demo",
+    user_id:userId,
     analysis_id:safeText(body.analysis_id || body.analysisId),
     product_id:safeText(body.product_id || body.productId),
     decision:safeText(body.decision || body.status || "İNCELE"),
@@ -875,6 +1005,7 @@ async function saveDecision(req,res,body){
 async function listDecisions(req,res,url){
   const deny = checkAuth(req); if(deny) return send(res,401,deny);
   await dbInitPromise;
+  const userId = getUserId(req, url, {});
   const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit") || 30)));
   if (pool && dbReady) {
     const r = await dbQuery(
@@ -883,11 +1014,38 @@ async function listDecisions(req,res,url){
        WHERE user_id=$1
        ORDER BY created_at DESC
        LIMIT $2`,
-      ["demo", limit]
+      [userId, limit]
     );
     return send(res,200,{ok:true,source:"postgres",count:r.rows.length,items:r.rows});
   }
   return send(res,200,{ok:true,source:"memory",count:memory.decisions.length,items:memory.decisions.slice(0,limit)});
+}
+
+async function searchHistory(req,res,url){
+  const deny = checkAuth(req); if(deny) return send(res,401,deny);
+  await dbInitPromise;
+  const userId = getUserId(req, url, {});
+  const q = safeText(url.searchParams.get("q"));
+  const limit = Math.min(50, Math.max(1, Number(url.searchParams.get("limit") || 20)));
+  if (!q) return send(res,400,{ok:false,error:"q gerekli"});
+  if (pool && dbReady) {
+    const r = await dbQuery(
+      `SELECT id, created_at, message, product_url, source, score, decision, products, raw->'product_evidence' AS product_evidence
+       FROM analyses
+       WHERE user_id=$1 AND (
+         message ILIKE $2 OR
+         product_url ILIKE $2 OR
+         source ILIKE $2 OR
+         raw::text ILIKE $2
+       )
+       ORDER BY created_at DESC
+       LIMIT $3`,
+      [userId, `%${q}%`, limit]
+    );
+    return send(res,200,{ok:true,source:"postgres",q,count:r.rows.length,items:r.rows});
+  }
+  const items = memory.analyses.filter(x => JSON.stringify(x).toLowerCase().includes(q.toLowerCase())).slice(0,limit);
+  return send(res,200,{ok:true,source:"memory",q,count:items.length,items});
 }
 
 function status(){
@@ -897,30 +1055,41 @@ function status(){
     version:CONFIG.version,
     time:now(),
     uptime_seconds:Math.round(process.uptime()),
+    milestone:"M2_FINAL_BACKEND",
     endpoints:{
       status:"GET /",
       ai_room:"GET/POST /ai-room",
       scan:"GET/POST /scan",
       product_url:"GET/POST /product-url",
       history:"GET /history",
+      search:"GET /search?q=...",
       save:"POST /save",
       saved:"GET /saved",
       decision:"POST /decision",
       decisions:"GET /decisions",
-      db_test:"GET /db-test"
+      db_test:"GET /db-test",
+      adapters:"GET /adapters"
     },
     env:{
       openai:!!CONFIG.openaiKey,
       openai_model:CONFIG.openaiModel,
       clean_ai_json:true,
       link_fetch_enabled:CONFIG.linkFetchEnabled,
+      product_image_cleanup:true,
       trendyol_link_adapter:true,
+      shopify_link_adapter:true,
       database_url_present:!!CONFIG.databaseUrl,
       db_ready:dbReady,
       db_error:dbError,
       api_token_required:!!CONFIG.apiToken,
       serpapi_next:!!CONFIG.serpapiKey,
       apify_next:!!CONFIG.apifyToken
+    },
+    policy:{
+      exact_sales_count:"never_hallucinate",
+      visible_sales_signal:"store_as_signal_not_exact_sales",
+      evidence_gate:"lock_decision_if_critical_evidence_missing",
+      ads_policy:"ad_intensity_is_not_sales"
     },
     memory_counts:{
       analyses:memory.analyses.length,
@@ -930,6 +1099,39 @@ function status(){
   };
 }
 
+function adaptersStatus(){
+  return {
+    ok:true,
+    version:CONFIG.version,
+    adapters:{
+      trendyol_link:{
+        status:"active",
+        type:"public_page_evidence",
+        extracts:["title","description","product_images","price_signal","rating_signal","review_count_signal","visible_sales_signal","brand_hint","seller_hint"],
+        limitations:["review_text_not_yet","seller_competition_not_yet","exact_sales_never_generated"]
+      },
+      shopify_link:{
+        status:"active",
+        type:"public_page_evidence",
+        extracts:["og_title","og_description","json_ld_product","images","price_signal","rating_if_available"],
+        limitations:["store_traffic_not_yet","ad_creative_not_yet"]
+      },
+      alibaba:{
+        status:"planned",
+        extracts:["supplier","moq","unit_price","shipping","sample","lead_time","qc"],
+        limitations:["not_active_in_m2_final"]
+      },
+      comments:{
+        status:"planned",
+        extracts:["positive_reviews","negative_reviews","photo_reviews","video_reviews"],
+        limitations:["not_active_in_m2_final"]
+      }
+    }
+  };
+}
+
+/* -------------------- Router -------------------- */
+
 const server = http.createServer(async(req,res)=>{
   try{
     const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
@@ -937,6 +1139,7 @@ const server = http.createServer(async(req,res)=>{
     if(url.pathname === "/favicon.ico") { res.writeHead(204); return res.end(); }
 
     if(req.method === "GET" && ["/","/health","/ready"].includes(url.pathname)) return send(res,200,status());
+    if(req.method === "GET" && url.pathname === "/adapters") return send(res,200,adaptersStatus());
 
     if(req.method === "GET" && url.pathname === "/db-test") {
       await dbInitPromise;
@@ -950,6 +1153,7 @@ const server = http.createServer(async(req,res)=>{
     }
 
     if(url.pathname === "/product-url"){
+      const deny = checkAuth(req); if(deny) return send(res,401,deny);
       const body = req.method === "POST" ? await readBody(req) : {};
       const productUrl = safeText(body.url || body.productUrl || url.searchParams.get("url"));
       const evidence = await readProductEvidence(productUrl);
@@ -958,26 +1162,27 @@ const server = http.createServer(async(req,res)=>{
 
     if(["/ai-room","/scan","/api/scan/new"].includes(url.pathname)){
       const body = req.method === "POST" ? await readBody(req) : {};
-      return analyze(req,res,body,url.searchParams);
+      return analyze(req,res,body,url.searchParams,url);
     }
 
     if(url.pathname === "/" && req.method === "POST"){
       const body = await readBody(req);
-      return analyze(req,res,body,url.searchParams);
+      return analyze(req,res,body,url.searchParams,url);
     }
 
     if(url.pathname === "/history" && req.method === "GET") return listHistory(req,res,url);
+    if(url.pathname === "/search" && req.method === "GET") return searchHistory(req,res,url);
 
     if(url.pathname === "/save" && req.method === "POST") {
       const body = await readBody(req);
-      return saveProduct(req,res,body);
+      return saveProduct(req,res,body,url);
     }
 
     if(url.pathname === "/saved" && req.method === "GET") return listSaved(req,res,url);
 
     if(url.pathname === "/decision" && req.method === "POST") {
       const body = await readBody(req);
-      return saveDecision(req,res,body);
+      return saveDecision(req,res,body,url);
     }
 
     if(url.pathname === "/decisions" && req.method === "GET") return listDecisions(req,res,url);
