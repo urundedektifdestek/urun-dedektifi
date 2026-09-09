@@ -6,7 +6,7 @@ const PORT = Number(process.env.PORT || 8080);
 
 const CONFIG = {
   app: process.env.PUBLIC_API_NAME || "Ürün Dedektifi API",
-  version: "2.1.0-m2-postgres-persistence",
+  version: "2.2.0-m2-clean-ai-json",
   openaiKey: process.env.OPENAI_API_KEY || "",
   openaiModel: process.env.OPENAI_MODEL || "gpt-5-mini",
   apiToken: process.env.API_TOKEN || "",
@@ -61,7 +61,6 @@ async function initDb(){
       products JSONB NOT NULL DEFAULT '[]'::jsonb,
       raw JSONB NOT NULL DEFAULT '{}'::jsonb
     );
-
     CREATE INDEX IF NOT EXISTS idx_analyses_user_created ON analyses(user_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_analyses_score ON analyses(score DESC);
 
@@ -78,7 +77,6 @@ async function initDb(){
       product JSONB NOT NULL DEFAULT '{}'::jsonb,
       notes TEXT
     );
-
     CREATE INDEX IF NOT EXISTS idx_saved_user_created ON saved_products(user_id, created_at DESC);
 
     CREATE TABLE IF NOT EXISTS decisions (
@@ -91,7 +89,6 @@ async function initDb(){
       notes TEXT,
       payload JSONB NOT NULL DEFAULT '{}'::jsonb
     );
-
     CREATE INDEX IF NOT EXISTS idx_decisions_user_created ON decisions(user_id, created_at DESC);
   `;
   await dbQuery(sql);
@@ -156,6 +153,52 @@ function parseJsonLoose(text){
   return null;
 }
 
+function flattenValue(v, maxLen=900){
+  if (v === null || v === undefined) return "";
+  if (typeof v === "string") return v.trim().slice(0,maxLen);
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
+  if (Array.isArray(v)) {
+    return v.map(x => flattenValue(x, 220)).filter(Boolean).slice(0,6).join(" • ").slice(0,maxLen);
+  }
+  if (typeof v === "object") {
+    const parts = [];
+    for (const [k,val] of Object.entries(v)) {
+      const flat = flattenValue(val, 320);
+      if (flat) parts.push(`${k}: ${flat}`);
+    }
+    return parts.slice(0,8).join(" | ").slice(0,maxLen);
+  }
+  return String(v).trim().slice(0,maxLen);
+}
+
+function cleanItem(x){
+  const s = flattenValue(x, 260)
+    .replace(/\s+/g, " ")
+    .replace(/^[\s,:;{}\[\]"]+|[\s,:;{}\[\]"]+$/g, "")
+    .trim();
+  if (!s) return "";
+  if (s.length < 6) return "";
+  if (/^[,:;{}\[\]" ]+$/.test(s)) return "";
+  if (s.includes("\n{") || s === ":" || s === ",") return "";
+  return s.slice(0,260);
+}
+
+function cleanArray(value, fallback=[]){
+  let arr = [];
+  if (Array.isArray(value)) arr = value;
+  else if (value) arr = [value];
+  const out = [];
+  for (const item of arr) {
+    const c = cleanItem(item);
+    if (c && !out.includes(c)) out.push(c);
+  }
+  for (const f of fallback) {
+    const c = cleanItem(f);
+    if (c && !out.includes(c)) out.push(c);
+  }
+  return out.slice(0,5);
+}
+
 function extractString(src,key){
   const re = new RegExp(`"${key}"\\s*:\\s*"((?:\\\\.|[^"\\\\])*)"`, "s");
   const m = safeText(src).match(re);
@@ -170,13 +213,15 @@ function extractArray(src,key){
   const re = new RegExp(`"${key}"\\s*:\\s*\\[([\\s\\S]*?)\\]`, "s");
   const m = safeText(src).match(re);
   if(!m) return [];
-  try { return JSON.parse(`[${m[1]}]`).map(safeText).filter(Boolean); } catch {}
+  try { return cleanArray(JSON.parse(`[${m[1]}]`)); } catch {}
   const vals=[]; const itemRe=/"((?:\\.|[^"\\])*)"/g; let im;
   while((im=itemRe.exec(m[1]))!==null){ try{vals.push(JSON.parse(`"${im[1]}"`));}catch{vals.push(im[1]);} }
-  return vals.filter(Boolean);
+  return cleanArray(vals);
 }
-function safeArray(v){ return Array.isArray(v) ? v.map(safeText).filter(Boolean) : []; }
 function decisionFromScore(score){ return score>=82?"GOLD":score>=70?"GÜÇLÜ ADAY":score>=55?"İNCELE":score>=40?"RİSKLİ":"PASS"; }
+
+const fallbackCommon = ["Kanıt olmadan winner denmez", "Tedarik maliyeti şart", "Satıcı yoğunluğu ölçülmeli"];
+const fallbackMissing = ["Canlı Trendyol/Shopify/Alibaba kanıtı", "Ürün fotoğrafı/video", "Yorum kanıtı", "GTIP/vergi/regülasyon"];
 
 function normalizeCouncil(raw, txt=""){
   const c = raw && typeof raw === "object" ? raw : {};
@@ -186,25 +231,33 @@ function normalizeCouncil(raw, txt=""){
   const ed = extractString(txt,"decision");
   const decision = allowed.includes(c.decision) ? c.decision : allowed.includes(ed) ? ed : decisionFromScore(score);
 
-  return {
+  const result = {
     mode:"openai_war_room",
     real_ai:true,
-    summary:safeText(c.summary)||extractString(txt,"summary")||"Derin AI tartışması üretildi.",
-    score, decision,
-    gpt:safeText(c.gpt)||extractString(txt,"gpt")||"Ticari fırsat ve hedef kitle kanıtlarla tartışılmalı.",
-    gemini:safeText(c.gemini)||extractString(txt,"gemini")||"Trend sinyalleri satış sayısı değildir; pazar sinyalleri doğrulanmalı.",
-    claude:safeText(c.claude)||extractString(txt,"claude")||"Risk, regülasyon ve marka/IP kanıtı olmadan AL kilitli kalır.",
-    deepseek:safeText(c.deepseek)||extractString(txt,"deepseek")||"Alibaba/tedarik maliyeti için canlı kaynak adapterı gerekir.",
-    common_points:safeArray(c.common_points).length?safeArray(c.common_points):extractArray(txt,"common_points"),
-    objections:safeArray(c.objections).length?safeArray(c.objections):extractArray(txt,"objections"),
-    missing_evidence:safeArray(c.missing_evidence).length?safeArray(c.missing_evidence):extractArray(txt,"missing_evidence"),
-    next_actions:safeArray(c.next_actions).length?safeArray(c.next_actions):extractArray(txt,"next_actions"),
-    judge:safeText(c.judge)||extractString(txt,"judge")||"Kritik kanıtlar tamamlanmadan AL kararı kilitli.",
-    alibaba_research:safeText(c.alibaba_research)||extractString(txt,"alibaba_research")||"Canlı Alibaba araştırması M2 adapter ile yapılacak.",
-    product_strengths:safeArray(c.product_strengths).length?safeArray(c.product_strengths):extractArray(txt,"product_strengths"),
-    review_insights:safeArray(c.review_insights).length?safeArray(c.review_insights):extractArray(txt,"review_insights"),
-    visual_insights:safeArray(c.visual_insights).length?safeArray(c.visual_insights):extractArray(txt,"visual_insights")
+    summary:flattenValue(c.summary, 700) || extractString(txt,"summary") || "Derin AI tartışması üretildi.",
+    score,
+    decision,
+    gpt:flattenValue(c.gpt, 900) || extractString(txt,"gpt") || "Ticari fırsat ve hedef kitle kanıtlarla tartışılmalı.",
+    gemini:flattenValue(c.gemini, 900) || extractString(txt,"gemini") || "Trend sinyalleri satış sayısı değildir; pazar sinyalleri doğrulanmalı.",
+    claude:flattenValue(c.claude, 900) || extractString(txt,"claude") || "Risk, regülasyon ve marka/IP kanıtı olmadan AL kilitli kalır.",
+    deepseek:flattenValue(c.deepseek, 900) || extractString(txt,"deepseek") || "Alibaba/tedarik maliyeti için canlı kaynak adapterı gerekir.",
+    common_points:cleanArray(c.common_points, extractArray(txt,"common_points").concat(fallbackCommon)),
+    objections:cleanArray(c.objections, extractArray(txt,"objections")),
+    missing_evidence:cleanArray(c.missing_evidence, extractArray(txt,"missing_evidence").concat(fallbackMissing)),
+    next_actions:cleanArray(c.next_actions, extractArray(txt,"next_actions")),
+    judge:flattenValue(c.judge, 600) || extractString(txt,"judge") || "Kritik kanıtlar tamamlanmadan AL kararı kilitli.",
+    alibaba_research:flattenValue(c.alibaba_research, 700) || extractString(txt,"alibaba_research") || "Canlı Alibaba araştırması M2 adapter ile yapılacak.",
+    product_strengths:cleanArray(c.product_strengths, extractArray(txt,"product_strengths")),
+    review_insights:cleanArray(c.review_insights, extractArray(txt,"review_insights")),
+    visual_insights:cleanArray(c.visual_insights, extractArray(txt,"visual_insights"))
   };
+
+  if (result.product_strengths.length === 0) result.product_strengths = result.common_points.slice(0,3);
+  if (result.review_insights.length === 0) result.review_insights = ["Canlı yorum adapterı bağlanınca olumlu/olumsuz yorumlar burada sınıflandırılacak."];
+  if (result.visual_insights.length === 0) result.visual_insights = ["Ürün fotoğrafı/video kanıtı henüz yok; adapter bağlanınca burada gösterilecek."];
+  if (result.next_actions.length === 0) result.next_actions = ["Yakın rakipleri listele", "Tedarikçi teklifleri topla", "GTIP/vergi/regülasyon kontrolü yap"];
+
+  return result;
 }
 
 function localCouncil(){
@@ -218,9 +271,9 @@ function localCouncil(){
     gemini:"Trend olumlu olabilir; sürdürülebilirlik/Montessori gibi açıları kreatif avantaj sağlar.",
     claude:"Kimyasal test, yaş grubu güvenliği, marka/IP ve iade riski kontrol edilmeden AL kilitli.",
     deepseek:"Alibaba canlı maliyet araştırması için adapter gerekir; MOQ, birim fiyat, navlun ve paket hacmi toplanmalı.",
-    common_points:["Kanıt olmadan winner denmez","Tedarik maliyeti şart","Satıcı yoğunluğu ölçülmeli"],
+    common_points:fallbackCommon,
     objections:["Canlı veri eksik","Regülasyon belirsiz"],
-    missing_evidence:["Canlı Trendyol/Shopify/Alibaba kanıtı","Ürün fotoğrafları/video","Olumlu/olumsuz yorum kanıtı","Satıcı yoğunluğu","GTIP/vergi/regülasyon","Marka/IP kontrolü"],
+    missing_evidence:fallbackMissing,
     next_actions:["Alibaba adapter bağla","Trendyol/Shopify ürün görsellerini çek","Yorumları sınıflandır"],
     judge:"İNCELE; AL kararı Evidence Gate ile kilitli.",
     alibaba_research:"Canlı Alibaba araması M2'de bağlanacak.",
@@ -230,26 +283,50 @@ function localCouncil(){
   };
 }
 
-async function openAiCouncil(payload){
-  if(!CONFIG.openaiKey) return localCouncil();
-  const prompt = `
-Sen Ürün Dedektifi AI Savaş Odası'sın. Tatmin edici ama JSON olarak cevap ver.
+function buildAiPrompt(payload){
+  return `
+Sen Ürün Dedektifi AI Savaş Odası'sın. Cevabın SADECE geçerli JSON olacak.
 
-Roller:
-- gpt: ticari fırsat, niş, hedef kitle, güçlü yönler
+Çok önemli format kuralları:
+- gpt, gemini, claude, deepseek, judge, alibaba_research alanları STRING olacak. Obje veya array yapma.
+- common_points, objections, missing_evidence, next_actions, product_strengths, review_insights, visual_insights alanları ARRAY OF STRING olacak.
+- real_ai true olacak.
+- mode "openai_war_room" olacak.
+- decision sadece şunlardan biri olacak: GOLD, GÜÇLÜ ADAY, İNCELE, RİSKLİ, PASS
+- Markdown ve kod bloğu yok.
+
+Derinlik kuralı:
+Her rol 3-5 cümlelik güçlü tartışma yazsın.
+- gpt: ticari fırsat, niş, hedef kitle, ürünün güçlü yönleri
 - gemini: trend, pazar, kreatif, sosyal medya, sürdürülebilirlik
 - claude: acımasız risk itirazı, kalite, iade, regülasyon, marka/IP
-- deepseek: Alibaba/tedarik/maliyet bakışı. Canlı Alibaba verisi yoksa bunu açıkça söyle; hangi aramalar, MOQ ve maliyet kalemleri gerektiğini yaz. Maliyet uydurma.
+- deepseek: Alibaba/tedarik/maliyet bakışı. Canlı Alibaba verisi yoksa "canlı veri yok" de; MOQ, birim fiyat, navlun, paket hacmi, numune, kalite kontrol, yerli üretim alternatifini tartış. Maliyet uydurma.
 
-Savaş odası gibi tartış. Ürün fotoğrafı, yorum, video, satıcı sayısı, satış sinyali yoksa kanıt yok de.
+Kanıt kuralı:
+Ürün fotoğrafı, yorum, video, satıcı sayısı, satış sinyali yoksa açıkça "kanıt yok" de.
 Exact satış sayısı uydurma. Reklam yoğunluğu satış değildir.
-Çıktı JSON olsun. Kod bloğu kullanma.
 
-Alanlar:
-mode, real_ai, summary, score, decision, gpt, gemini, claude, deepseek, common_points, objections, missing_evidence, next_actions, judge, alibaba_research, product_strengths, review_insights, visual_insights
-
-Arrayler 3-5 madde olsun.
-decision: GOLD | GÜÇLÜ ADAY | İNCELE | RİSKLİ | PASS
+JSON şeması:
+{
+  "mode":"openai_war_room",
+  "real_ai":true,
+  "summary":"string",
+  "score":0,
+  "decision":"İNCELE",
+  "gpt":"string",
+  "gemini":"string",
+  "claude":"string",
+  "deepseek":"string",
+  "common_points":["string"],
+  "objections":["string"],
+  "missing_evidence":["string"],
+  "next_actions":["string"],
+  "judge":"string",
+  "alibaba_research":"string",
+  "product_strengths":["string"],
+  "review_insights":["string"],
+  "visual_insights":["string"]
+}
 
 Kullanıcı profili: ${JSON.stringify(payload.profile || {})}
 Kanallar: Trendyol, Shopify, Etsy, Alibaba, Yerli üretim, CrossMarket, Meta/Instagram, Amazon
@@ -257,21 +334,32 @@ Mesaj: ${payload.message || ""}
 Link: ${payload.productUrl || ""}
 Metin/Yorum: ${payload.productText || ""}
 `.trim();
+}
+
+async function openAiCouncil(payload){
+  if(!CONFIG.openaiKey) return localCouncil();
+
   try{
     const r = await fetch("https://api.openai.com/v1/responses", {
       method:"POST",
       headers:{"Authorization":`Bearer ${CONFIG.openaiKey}`,"Content-Type":"application/json"},
-      body:JSON.stringify({model:CONFIG.openaiModel,input:prompt,store:false,max_output_tokens:3200})
+      body:JSON.stringify({
+        model:CONFIG.openaiModel,
+        input:buildAiPrompt(payload),
+        store:false,
+        max_output_tokens:4500
+      })
     });
+
     const data = await r.json().catch(()=>({}));
     if(!r.ok) return {...localCouncil(),mode:"openai_error_fallback",openai_error:data?.error?.message || `OpenAI HTTP ${r.status}`};
+
     const txt = outputText(data);
     const parsed = parseJsonLoose(txt);
-    if(parsed) return normalizeCouncil(parsed,txt);
-    const ex = normalizeCouncil({},txt);
-    ex.mode = "openai_extracted";
-    ex.openai_raw_text = txt.slice(0,900);
-    return ex;
+    const c = normalizeCouncil(parsed || {}, txt);
+    c.mode = parsed ? "openai_war_room" : "openai_clean_extracted";
+    c.openai_format_cleaned = true;
+    return c;
   }catch(e){
     return {...localCouncil(),mode:"openai_error_fallback",openai_error:e?.message || "OpenAI bağlantı hatası"};
   }
@@ -542,6 +630,7 @@ function status(){
     env:{
       openai:!!CONFIG.openaiKey,
       openai_model:CONFIG.openaiModel,
+      clean_ai_json:true,
       database_url_present:!!CONFIG.databaseUrl,
       db_ready:dbReady,
       db_error:dbError,
