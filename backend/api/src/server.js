@@ -6,7 +6,7 @@ const PORT = Number(process.env.PORT || 8080);
 
 const CONFIG = {
   app: process.env.PUBLIC_API_NAME || "Ürün Dedektifi API",
-  version: "4.1.5-m4.1-apify-dom-extract-fix",
+  version: "4.1.6-m4.1-dedicated-trendyol-actor",
   openaiKey: process.env.OPENAI_API_KEY || "",
   openaiModel: process.env.OPENAI_MODEL || "gpt-5-mini",
   apiToken: process.env.API_TOKEN || "",
@@ -983,7 +983,7 @@ async function analyze(req,res,body,params,urlObj){
     id:id("analysis"),
     app:CONFIG.app,
     version:CONFIG.version,
-    philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true, radar_find_fix:true, browser_radar_apify:true, apify_link_extract_fix:true, apify_dom_extract_fix:true, apify_dom_extract_fix:true,
+    philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true, radar_find_fix:true, browser_radar_apify:true, apify_link_extract_fix:true, apify_dom_extract_fix:true, dedicated_trendyol_actor:true, dedicated_trendyol_actor:true, apify_dom_extract_fix:true, dedicated_trendyol_actor:true, dedicated_trendyol_actor:true,
     created_at:now(),
     user_id:userId,
     input:{message,productText,productUrl,profile},
@@ -1501,6 +1501,252 @@ function apifyActorPath(){
   return safeText(CONFIG.apifyActorId || "apify~web-scraper").replace("/", "~");
 }
 
+function toActorId(v){
+  return safeText(v).replace("/", "~");
+}
+
+function buildDedicatedTrendyolInputs(query, limit, params={}){
+  const max = Math.max(1, Math.min(50, Number(limit || 10)));
+  const maxPrice = Number(params.budget || params.maxPrice || 0);
+  const minRating = Number(params.minRating || 0);
+  const searchUrl = buildTrendyolSearchUrl(query, 1);
+
+  // Different Trendyol actors use different input schemas.
+  // We try safe schemas in order and parse whatever structured items come back.
+  const commonFilters = {};
+  if (Number.isFinite(maxPrice) && maxPrice > 0) commonFilters.maxPrice = Math.round(maxPrice);
+  if (Number.isFinite(minRating) && minRating > 0) commonFilters.minRating = minRating;
+
+  return [
+    {
+      label:"solidcode_schema",
+      actor: toActorId(process.env.APIFY_TRENDYOL_ACTOR_ID || CONFIG.apifyTrendyolActorId || "solidcode/trendyol-scraper"),
+      input:{
+        searchQueries:[query],
+        startUrls:[],
+        maxProductsPerSource:max,
+        includeReviews:false,
+        maxReviewsPerProduct:0,
+        sort:"best_match",
+        ...commonFilters
+      }
+    },
+    {
+      label:"maximedupre_schema",
+      actor: toActorId(process.env.APIFY_TRENDYOL_ACTOR_ID_ALT || "maximedupre/trendyol-scraper"),
+      input:{
+        target:"search",
+        searchQueries:[query],
+        storefront:"turkey",
+        maxProductsPerSource:max,
+        includeReviews:false,
+        maxReviewsPerProduct:0,
+        sort:"best_match",
+        ...commonFilters
+      }
+    },
+    {
+      label:"fatihtahta_schema",
+      actor: toActorId(process.env.APIFY_TRENDYOL_ACTOR_ID_ALLINONE || "fatihtahta/trendyol-scraper"),
+      input:{
+        startUrls:[searchUrl],
+        limit:max,
+        includeReviews:false,
+        maxReviewsPerProduct:0
+      }
+    }
+  ];
+}
+
+function firstNum(...vals){
+  for (const v of vals) {
+    if (v === null || v === undefined || v === "") continue;
+    const n = Number(String(v).replace(/[^\d.,-]/g, "").replace(/\./g, "").replace(",", "."));
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
+function normalizeDedicatedTrendyolItem(item, query){
+  const raw = item || {};
+  if (safeText(raw.recordType || raw.type).toLowerCase() === "review") return null;
+
+  const priceObj = raw.priceDetails || raw.price || raw.pricing || raw.prices || {};
+  const ratingObj = raw.aggregateRating || raw.rating || raw.ratings || {};
+  const sellerObj = raw.seller || raw.merchant || raw.store || {};
+  const brandObj = raw.brand || {};
+  const categoryObj = raw.category || raw.categories || {};
+
+  const productUrl = safeText(
+    raw.productUrl || raw.url || raw.product_url || raw.link || raw.href ||
+    raw.canonicalUrl || raw.canonical_url || raw.product?.url || raw.product?.productUrl
+  );
+  const productId = safeText(
+    raw.productId || raw.product_id || raw.contentId || raw.id || raw.sku ||
+    extractContentIdFromUrl(productUrl)
+  );
+
+  const imagesRaw = raw.images || raw.imageUrls || raw.image_urls || raw.image || raw.media || raw.pictures || [];
+  let images = [];
+  if (Array.isArray(imagesRaw)) {
+    images = imagesRaw.map(x => typeof x === "string" ? x : (x?.url || x?.src || x?.image || "")).filter(Boolean);
+  } else if (typeof imagesRaw === "string") {
+    images = [imagesRaw];
+  } else if (imagesRaw && typeof imagesRaw === "object") {
+    images = [imagesRaw.url || imagesRaw.src || imagesRaw.image || ""].filter(Boolean);
+  }
+
+  const visiblePrice = firstNum(
+    raw.price,
+    raw.salePrice,
+    raw.sellingPrice,
+    raw.discountedPrice,
+    raw.finalPrice,
+    priceObj.sellingPrice,
+    priceObj.discountedPrice,
+    priceObj.originalPrice,
+    priceObj.price,
+    priceObj.value,
+    priceObj.amount
+  );
+
+  const ratingValue = firstNum(
+    raw.rating,
+    raw.ratingValue,
+    raw.averageRating,
+    ratingObj.ratingValue,
+    ratingObj.value,
+    ratingObj.average
+  );
+
+  const reviewCount = firstNum(
+    raw.reviewCount,
+    raw.commentCount,
+    raw.reviewsCount,
+    raw.ratingCount,
+    ratingObj.reviewCount,
+    ratingObj.ratingCount,
+    ratingObj.count
+  );
+
+  const favoriteCount = firstNum(raw.favorite, raw.favoriteCount, raw.favorites, raw.wishListCount, raw.socialProof?.favoriteCount);
+  const qaCount = firstNum(raw.questionCount, raw.qaCount, raw.qAndACount, raw.answeredQuestionsCount);
+
+  const title = safeText(
+    raw.name || raw.title || raw.productName || raw.product_title || raw.product?.name || raw.product?.title
+  );
+  const brand = safeText(typeof brandObj === "string" ? brandObj : (brandObj.name || raw.brandName || raw.brand_name));
+  const seller = cleanSellerNameM4(safeText(
+    typeof sellerObj === "string" ? sellerObj : (sellerObj.name || sellerObj.sellerName || sellerObj.merchantName || raw.sellerName || raw.merchantName)
+  ));
+
+  if (!productId && !productUrl && !title) return null;
+
+  return {
+    product_id: productId || id("trendyol_actor"),
+    source:"Trendyol",
+    product_url: productUrl,
+    title: title || "Trendyol ürün adayı",
+    brand,
+    seller,
+    image: images[0] || "",
+    images: images.slice(0, 12),
+    current_price: visiblePrice,
+    rating_value: ratingValue,
+    review_count: reviewCount,
+    favorite_count: favoriteCount,
+    qa_count: qaCount,
+    query,
+    exact_sales_count:null,
+    visible_sales_signal: raw.visibleSalesSignal || raw.salesSignal || raw.soldText || null,
+    categories: Array.isArray(categoryObj) ? categoryObj : (categoryObj ? [categoryObj.categoryHierarchy || categoryObj.categoryName || categoryObj.name].filter(Boolean) : []),
+    raw,
+    evidence_source:"apify_dedicated_trendyol_actor"
+  };
+}
+
+function extractProductsFromDedicatedItems(items, query){
+  const out = [];
+  const seen = new Set();
+
+  function walk(x){
+    if (!x) return;
+    if (Array.isArray(x)) {
+      for (const v of x) walk(v);
+      return;
+    }
+    if (typeof x !== "object") return;
+
+    const p = normalizeDedicatedTrendyolItem(x, query);
+    if (p) {
+      const key = p.product_id || p.product_url || p.title;
+      if (!seen.has(key)) {
+        seen.add(key);
+        out.push(p);
+      }
+    }
+
+    // Some actors return nested product arrays.
+    for (const key of ["products","items","data","results","productList","listings"]) {
+      if (Array.isArray(x[key])) walk(x[key]);
+    }
+  }
+
+  walk(items);
+  return out;
+}
+
+async function runDedicatedTrendyolActor(query, limit, params, diagnostics){
+  if (!CONFIG.apifyToken) return [];
+
+  const attempts = buildDedicatedTrendyolInputs(query, limit, params);
+  const allProducts = [];
+
+  for (const attempt of attempts) {
+    try {
+      const actor = toActorId(attempt.actor);
+      const url = `https://api.apify.com/v2/acts/${actor}/run-sync-get-dataset-items?token=${encodeURIComponent(CONFIG.apifyToken)}&timeout=${encodeURIComponent(CONFIG.apifyTimeoutSecs || 180)}`;
+      const r = await fetch(url, {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify(attempt.input)
+      });
+      const text = await r.text();
+      let data = null;
+      try { data = JSON.parse(text); } catch { data = text; }
+
+      const products = r.ok ? extractProductsFromDedicatedItems(data, query) : [];
+      diagnostics.dedicated_actor_runs = diagnostics.dedicated_actor_runs || [];
+      diagnostics.dedicated_actor_runs.push({
+        actor,
+        label:attempt.label,
+        http_status:r.status,
+        ok:r.ok,
+        item_count:Array.isArray(data) ? data.length : null,
+        products:products.length,
+        sample:Array.isArray(data) && data[0] ? JSON.stringify(data[0]).slice(0, 500) : String(text).slice(0, 500)
+      });
+
+      if (products.length) {
+        allProducts.push(...products);
+        break;
+      }
+
+      // If user must approve/pay for a community actor, record it and try the next actor.
+    } catch(e) {
+      diagnostics.dedicated_actor_runs = diagnostics.dedicated_actor_runs || [];
+      diagnostics.dedicated_actor_runs.push({
+        actor:safeText(attempt.actor),
+        label:attempt.label,
+        ok:false,
+        error:e?.message || "dedicated_actor_error"
+      });
+    }
+  }
+
+  return allProducts.slice(0, limit);
+}
+
 function buildApifyWebScraperInput(query, page=1, maxLinks=80){
   const startUrl = buildTrendyolSearchUrl(query, page);
 
@@ -1845,10 +2091,10 @@ async function runRadar(userId, params){
   const pages = Math.max(1, Math.min(3, Number(params.pages || 1)));
   const runId = id("run");
   const diagnostics = {
-    strategy:"api_then_html_then_apify_browser",
+    strategy:"dedicated_trendyol_actor_then_api_html_browser",
     api_pages:[], html_pages:[], apify_pages:[], apify_runs:[], product_page_errors:[],
     query_variants:queryVariants(query),
-    provider_status:{apify_token_present:!!CONFIG.apifyToken, apify_actor_id:CONFIG.apifyActorId}
+    provider_status:{apify_token_present:!!CONFIG.apifyToken, apify_actor_id:CONFIG.apifyActorId, apify_trendyol_actor_id:CONFIG.apifyTrendyolActorId}
   };
   if (pool && dbReady) await dbQuery(`INSERT INTO scan_runs(id,user_id,source,query,status,params) VALUES($1,$2,$3,$4,$5,$6::jsonb)`, [runId,userId,"Trendyol",query,"running",JSON.stringify(params)]);
   const seen = new Set();
@@ -1864,6 +2110,18 @@ async function runRadar(userId, params){
   };
   let error = "";
   try {
+    // 0) Dedicated Trendyol actor attempt
+    for (const qv of diagnostics.query_variants) {
+      if (collected.length < limit) {
+        try { addProducts(await runDedicatedTrendyolActor(qv, limit - collected.length, params, diagnostics)); }
+        catch(e) {
+          diagnostics.dedicated_actor_runs = diagnostics.dedicated_actor_runs || [];
+          diagnostics.dedicated_actor_runs.push({query:qv, error:e?.message || "dedicated_actor_error"});
+        }
+      }
+      if (collected.length >= limit) break;
+    }
+
     // 1) Fast direct API attempt
     for (const qv of diagnostics.query_variants) {
       for (let page=1; page<=pages && collected.length<limit; page++) {
@@ -1946,16 +2204,16 @@ async function listAlertsM4(userId, limit=50){
 
 async function dashboardM4(userId){
   if (!pool || !dbReady) return {ok:true, version:CONFIG.version,
-    philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true, radar_find_fix:true, browser_radar_apify:true, apify_link_extract_fix:true, apify_dom_extract_fix:true, apify_dom_extract_fix:true, counts:{db:false}};
+    philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true, radar_find_fix:true, browser_radar_apify:true, apify_link_extract_fix:true, apify_dom_extract_fix:true, dedicated_trendyol_actor:true, dedicated_trendyol_actor:true, apify_dom_extract_fix:true, dedicated_trendyol_actor:true, dedicated_trendyol_actor:true, counts:{db:false}};
   const q = async(sql,params=[]) => Number((await dbQuery(sql,params)).rows[0]?.count || 0);
   return {ok:true, app:CONFIG.app, version:CONFIG.version,
-    philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true, radar_find_fix:true, browser_radar_apify:true, apify_link_extract_fix:true, apify_dom_extract_fix:true, apify_dom_extract_fix:true, counts:{
+    philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true, radar_find_fix:true, browser_radar_apify:true, apify_link_extract_fix:true, apify_dom_extract_fix:true, dedicated_trendyol_actor:true, dedicated_trendyol_actor:true, apify_dom_extract_fix:true, dedicated_trendyol_actor:true, dedicated_trendyol_actor:true, counts:{
     discovered_products: await q(`SELECT COUNT(*) FROM discovered_products WHERE user_id=$1`,[userId]),
     alerts: await q(`SELECT COUNT(*) FROM alerts WHERE user_id=$1`,[userId]),
     saved_products: await q(`SELECT COUNT(*) FROM saved_products WHERE user_id=$1`,[userId]),
     scan_runs: await q(`SELECT COUNT(*) FROM scan_runs WHERE user_id=$1`,[userId]),
     high_score: await q(`SELECT COUNT(*) FROM discovered_products WHERE user_id=$1 AND score>=70`,[userId])
-  }, env:{openai:!!CONFIG.openaiKey, db_ready:dbReady, trend_yol:true, radar_find_fix:true, browser_radar_apify:true, apify_link_extract_fix:true, apify_dom_extract_fix:true, apify_dom_extract_fix:true, apify_token_present:!!CONFIG.apifyToken}};
+  }, env:{openai:!!CONFIG.openaiKey, db_ready:dbReady, trend_yol:true, radar_find_fix:true, browser_radar_apify:true, apify_link_extract_fix:true, apify_dom_extract_fix:true, dedicated_trendyol_actor:true, dedicated_trendyol_actor:true, apify_dom_extract_fix:true, dedicated_trendyol_actor:true, dedicated_trendyol_actor:true, apify_token_present:!!CONFIG.apifyToken}};
 }
 
 async function sourceHealthM4(){
@@ -2032,16 +2290,16 @@ function status(){
       full_scope_loaded:true,
       auto_product_discovery:true,
       radar_find_fix:true,
-      browser_radar_apify:true, apify_link_extract_fix:true, apify_dom_extract_fix:true, apify_dom_extract_fix:true,
+      browser_radar_apify:true, apify_link_extract_fix:true, apify_dom_extract_fix:true, dedicated_trendyol_actor:true, dedicated_trendyol_actor:true, apify_dom_extract_fix:true, dedicated_trendyol_actor:true, dedicated_trendyol_actor:true,
       apify_token_present:!!CONFIG.apifyToken,
-      apify_actor_id:CONFIG.apifyActorId,
+      apify_actor_id:CONFIG.apifyActorId, apify_trendyol_actor_id:CONFIG.apifyTrendyolActorId,
       cloud_autopilot_worker:true,
       opportunity_engine:true,
       momentum_engine:true,
       alerts_engine:true,
       serpapi_next:!!CONFIG.serpapiKey,
       apify_next:!!CONFIG.apifyToken,
-      apify_link_extract_fix:true, apify_dom_extract_fix:true
+      apify_link_extract_fix:true, apify_dom_extract_fix:true, dedicated_trendyol_actor:true
     },
     policy:{
       exact_sales_count:"never_hallucinate",
@@ -2153,7 +2411,16 @@ const server = http.createServer(async(req,res)=>{
     if(req.method === "GET" && url.pathname === "/source-health") return send(res,200,await sourceHealthM4());
 
 
-    if(url.pathname === "/browser-radar/test") {
+    
+    if(url.pathname === "/dedicated-trendyol/test"){
+      const query = safeText(url.searchParams.get("query") || url.searchParams.get("q") || "okul çantası");
+      const limit = Math.max(1, Math.min(20, Number(url.searchParams.get("limit") || 10)));
+      const diagnostics = {strategy:"dedicated_trendyol_actor_only", dedicated_actor_runs:[]};
+      const items = await runDedicatedTrendyolActor(query, limit, Object.fromEntries(url.searchParams.entries()), diagnostics);
+      return send(res,200,{ok:items.length>0,version:CONFIG.version,query,count:items.length,items,diagnostics,required:{APIFY_TOKEN:!CONFIG.apifyToken, APIFY_TRENDYOL_ACTOR_ID:false}});
+    }
+
+if(url.pathname === "/browser-radar/test") {
       const userId = CONFIG.defaultUserId;
       const q = safeText(url.searchParams.get("query") || "okul çantası");
       const page = Math.max(1, Math.min(3, Number(url.searchParams.get("page") || 1)));
