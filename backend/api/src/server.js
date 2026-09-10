@@ -6,7 +6,7 @@ const PORT = Number(process.env.PORT || 8080);
 
 const CONFIG = {
   app: process.env.PUBLIC_API_NAME || "Ürün Dedektifi API",
-  version: "4.1.2-m4.1-radar-find-fix",
+  version: "4.1.3-m4.1-browser-radar-apify",
   openaiKey: process.env.OPENAI_API_KEY || "",
   openaiModel: process.env.OPENAI_MODEL || "gpt-5-mini",
   apiToken: process.env.API_TOKEN || "",
@@ -14,6 +14,8 @@ const CONFIG = {
   linkFetchEnabled: (process.env.LINK_FETCH_ENABLED || "true").toLowerCase() !== "false",
   serpapiKey: process.env.SERPAPI_KEY || "",
   apifyToken: process.env.APIFY_TOKEN || "",
+  apifyActorId: process.env.APIFY_ACTOR_ID || "apify~web-scraper",
+  apifyTimeoutSecs: Number(process.env.APIFY_TIMEOUT_SECS || 120),
   defaultUserId: process.env.DEFAULT_USER_ID || "demo"
 };
 
@@ -981,7 +983,7 @@ async function analyze(req,res,body,params,urlObj){
     id:id("analysis"),
     app:CONFIG.app,
     version:CONFIG.version,
-    philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true, radar_find_fix:true,
+    philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true, radar_find_fix:true, browser_radar_apify:true,
     created_at:now(),
     user_id:userId,
     input:{message,productText,productUrl,profile},
@@ -1215,7 +1217,7 @@ function featureMatrix(){
     philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true,
     philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true,
     features:[
-      {name:"Otomatik Ürün Keşfi",status:"live",note:"/radar/run Trendyol arama akışından ürün adaylarını toplar."},
+      {name:"Otomatik Ürün Keşfi",status:"live",note:"/radar/run önce fetch dener; engellenirse Apify browser adapter ile ürün adaylarını toplar."},
       {name:"Trendyol Market Intelligence",status:"partial",note:"Başlık, fiyat, puan, yorum sayısı, görsel, marka ve public sayfa kanıtı."},
       {name:"Ürün Snapshot Geçmişi",status:"live",note:"Fiyat/puan/yorum sayısı zaman içinde product_snapshots tablosuna yazılır."},
       {name:"Momentum Motoru",status:"live",note:"Yeni ürün, yorum artışı, fiyat değişimi ve skor hareketi hesaplanır."},
@@ -1489,6 +1491,136 @@ async function collectTrendyolFromHtmlFallback(query, page, limit, diagnostics){
 }
 
 
+function buildTrendyolSearchUrl(query, page=1){
+  const enc = encodeURIComponent(query);
+  return `https://www.trendyol.com/sr?q=${enc}&qt=${enc}&st=${enc}&os=1&pi=${page}`;
+}
+
+function apifyActorPath(){
+  // Apify actor IDs in URL path use username~actor-name form.
+  return safeText(CONFIG.apifyActorId || "apify~web-scraper").replace("/", "~");
+}
+
+function buildApifyWebScraperInput(query, page=1, maxLinks=80){
+  const startUrl = buildTrendyolSearchUrl(query, page);
+  const pageFunction = `async function pageFunction(context) {
+    const { request, log } = context;
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+    const normalize = (u) => {
+      if (!u) return '';
+      u = String(u).replace(/\\u002F/g, '/').replace(/\\\\\//g, '/').trim();
+      if (u.startsWith('//')) u = 'https:' + u;
+      if (u.startsWith('/')) u = 'https://www.trendyol.com' + u;
+      if (!u.startsWith('http') && u.includes('-p-')) u = 'https://www.trendyol.com/' + u;
+      const q = u.indexOf('?');
+      if (q > 0) u = u.slice(0, q);
+      return u;
+    };
+    let links = [];
+    try {
+      if (context.page) {
+        await sleep(2500);
+        try { await context.page.waitForSelector('a[href*="-p-"]', { timeout: 15000 }); } catch (e) {}
+        links = await context.page.$$eval('a[href*="-p-"]', els => els.map(a => a.href || a.getAttribute('href') || ''));
+        if (!links.length) {
+          const html = await context.page.content();
+          const re = /(?:href=\\"|href=\'|\\"url\\":\\"|\\"productUrl\\":\\")([^\\"\']*-p-\\d+[^\\"\']*)/gi;
+          let m; while ((m = re.exec(html)) !== null) links.push(m[1]);
+        }
+      } else if (context.jQuery) {
+        const $ = context.jQuery;
+        $('a[href*="-p-"]').each((_, a) => links.push($(a).attr('href')));
+      }
+    } catch (e) {
+      return { ok:false, source:'apify_web_scraper', url:request.url, error:String(e && e.message || e), links:[] };
+    }
+    links = Array.from(new Set(links.map(normalize).filter(u => u.includes('trendyol.com') && u.includes('-p-')))).slice(0, ${maxLinks});
+    return { ok:true, source:'apify_web_scraper', url: request.url, query: ${JSON.stringify(query)}, page:${page}, link_count: links.length, links };
+  }`;
+
+  return {
+    startUrls: [{ url: startUrl }],
+    maxRequestsPerCrawl: 1,
+    maxConcurrency: 1,
+    pageFunction,
+    proxyConfiguration: { useApifyProxy: true },
+    browserLog: false,
+    debugLog: false
+  };
+}
+
+async function runApifyActorSync(input, diagnostics){
+  if (!CONFIG.apifyToken) throw new Error("APIFY_TOKEN yok");
+  const actor = apifyActorPath();
+  const timeout = Math.max(30, Math.min(300, Number(CONFIG.apifyTimeoutSecs || 120)));
+  const url = `https://api.apify.com/v2/acts/${actor}/run-sync-get-dataset-items?token=${encodeURIComponent(CONFIG.apifyToken)}&timeout=${timeout}&memory=1024`;
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), (timeout + 20) * 1000);
+  try {
+    const r = await fetch(url, {
+      method:"POST",
+      signal: ctrl.signal,
+      headers:{"Content-Type":"application/json", "Accept":"application/json"},
+      body: JSON.stringify(input)
+    });
+    const text = await r.text();
+    let data;
+    try { data = JSON.parse(text); } catch { data = text; }
+    diagnostics.apify_runs.push({actor, http_status:r.status, ok:r.ok, item_count:Array.isArray(data)?data.length:null});
+    if (!r.ok) throw new Error(`Apify HTTP ${r.status}: ${typeof data === "string" ? data.slice(0,300) : JSON.stringify(data).slice(0,300)}`);
+    return Array.isArray(data) ? data : [];
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+function extractLinksFromApifyItems(items){
+  const links = [];
+  const walk = (x) => {
+    if (!x) return;
+    if (typeof x === "string") {
+      if (x.includes("-p-")) links.push(normalizeTrendyolUrl(x));
+      return;
+    }
+    if (Array.isArray(x)) { for (const it of x) walk(it); return; }
+    if (typeof x === "object") {
+      if (x.url && String(x.url).includes("-p-")) links.push(normalizeTrendyolUrl(x.url));
+      if (x.product_url && String(x.product_url).includes("-p-")) links.push(normalizeTrendyolUrl(x.product_url));
+      if (x.productUrl && String(x.productUrl).includes("-p-")) links.push(normalizeTrendyolUrl(x.productUrl));
+      if (Array.isArray(x.links)) for (const l of x.links) walk(l);
+      if (Array.isArray(x.items)) for (const l of x.items) walk(l);
+    }
+  };
+  for (const item of items || []) walk(item);
+  return uniq(links).filter(u => u.includes("trendyol.com") && u.includes("-p-")).slice(0, 120);
+}
+
+async function collectTrendyolFromApify(query, page, limit, diagnostics){
+  if (!CONFIG.apifyToken) {
+    diagnostics.apify_required = true;
+    diagnostics.apify_message = "Railway IP Trendyol aramadan 403 aldığı için APIFY_TOKEN gerekli.";
+    return [];
+  }
+  const input = buildApifyWebScraperInput(query, page, Math.max(limit * 3, 30));
+  const datasetItems = await runApifyActorSync(input, diagnostics);
+  const links = extractLinksFromApifyItems(datasetItems);
+  diagnostics.apify_pages.push({query, page, links:links.length});
+  const products = [];
+  for (const link of links.slice(0, Math.max(limit * 2, limit))) {
+    try {
+      const ev = await readProductEvidence(link);
+      if (ev && ev.ok) products.push(productEvidenceToRadarProduct(ev, query));
+      if (products.length >= limit) break;
+    } catch(e) {
+      diagnostics.product_page_errors.push({url:link, error:e?.message || "product_page_error"});
+    }
+  }
+  return products;
+}
+
+
+
+
 async function previousSnapshot(productId, userId){
   if (!pool || !dbReady || !productId) return null;
   const r = await dbQuery(`SELECT price, rating_value, review_count FROM product_snapshots WHERE product_id=$1 AND user_id=$2 ORDER BY created_at DESC LIMIT 1`, [productId,userId]);
@@ -1563,50 +1695,58 @@ async function storeDiscoveryProduct(p, userId, runId, params){
 }
 
 
+
 async function runRadar(userId, params){
   const query = safeText(params.query || params.q || "okul çantası");
   const limit = Math.max(1, Math.min(50, Number(params.limit || 20)));
   const pages = Math.max(1, Math.min(3, Number(params.pages || 1)));
   const runId = id("run");
-  const diagnostics = {strategy:"api_then_html_product_page_fallback", api_pages:[], html_pages:[], product_page_errors:[], query_variants:queryVariants(query)};
+  const diagnostics = {
+    strategy:"api_then_html_then_apify_browser",
+    api_pages:[], html_pages:[], apify_pages:[], apify_runs:[], product_page_errors:[],
+    query_variants:queryVariants(query),
+    provider_status:{apify_token_present:!!CONFIG.apifyToken, apify_actor_id:CONFIG.apifyActorId}
+  };
   if (pool && dbReady) await dbQuery(`INSERT INTO scan_runs(id,user_id,source,query,status,params) VALUES($1,$2,$3,$4,$5,$6::jsonb)`, [runId,userId,"Trendyol",query,"running",JSON.stringify(params)]);
   const seen = new Set();
   const collected = [];
+  const addProducts = (products) => {
+    for (const p of products || []) {
+      const pid = p.product_id || extractContentIdFromUrl(p.product_url);
+      if (!pid || seen.has(pid)) continue;
+      seen.add(pid);
+      collected.push(p);
+      if (collected.length >= limit) break;
+    }
+  };
   let error = "";
   try {
+    // 1) Fast direct API attempt
     for (const qv of diagnostics.query_variants) {
       for (let page=1; page<=pages && collected.length<limit; page++) {
-        try {
-          const apiProducts = await collectTrendyolFromApi(qv, page, diagnostics);
-          for (const p of apiProducts) {
-            const pid = p.product_id || extractContentIdFromUrl(p.product_url);
-            if (!pid || seen.has(pid)) continue;
-            seen.add(pid);
-            collected.push(p);
-            if (collected.length >= limit) break;
-          }
-        } catch(e) {
-          diagnostics.api_pages.push({query:qv, page, error:e?.message || "api_error"});
-        }
+        try { addProducts(await collectTrendyolFromApi(qv, page, diagnostics)); }
+        catch(e) { diagnostics.api_pages.push({query:qv, page, error:e?.message || "api_error"}); }
       }
       if (collected.length >= limit) break;
     }
 
+    // 2) HTML search fallback
     if (collected.length === 0) {
       for (const qv of diagnostics.query_variants) {
         for (let page=1; page<=pages && collected.length<limit; page++) {
-          try {
-            const htmlProducts = await collectTrendyolFromHtmlFallback(qv, page, limit - collected.length, diagnostics);
-            for (const p of htmlProducts) {
-              const pid = p.product_id || extractContentIdFromUrl(p.product_url);
-              if (!pid || seen.has(pid)) continue;
-              seen.add(pid);
-              collected.push(p);
-              if (collected.length >= limit) break;
-            }
-          } catch(e) {
-            diagnostics.html_pages.push({query:qv, page, error:e?.message || "html_error"});
-          }
+          try { addProducts(await collectTrendyolFromHtmlFallback(qv, page, limit - collected.length, diagnostics)); }
+          catch(e) { diagnostics.html_pages.push({query:qv, page, error:e?.message || "html_error"}); }
+        }
+        if (collected.length >= limit) break;
+      }
+    }
+
+    // 3) Browser/proxy provider fallback: Apify
+    if (collected.length === 0) {
+      for (const qv of diagnostics.query_variants) {
+        for (let page=1; page<=pages && collected.length<limit; page++) {
+          try { addProducts(await collectTrendyolFromApify(qv, page, limit - collected.length, diagnostics)); }
+          catch(e) { diagnostics.apify_pages.push({query:qv, page, error:e?.message || "apify_error"}); }
         }
         if (collected.length >= limit) break;
       }
@@ -1616,6 +1756,14 @@ async function runRadar(userId, params){
     for (const p of collected.slice(0, limit)) items.push(await storeDiscoveryProduct(p, userId, runId, params));
     items.sort((a,b) => (b.score||0) - (a.score||0));
     if (pool && dbReady) await dbQuery(`UPDATE scan_runs SET status='success', finished_at=NOW(), found_count=$1, saved_count=$2 WHERE id=$3`, [collected.length,items.length,runId]);
+
+    const warnings = [
+      "Exact satış sayısı üretilmedi.",
+      "Trendyol fetch/HTML 403 verirse Apify browser adapter devreye girer.",
+      "Shopify/Ads/Alibaba/Yerli adapterları canlı sağlayıcı bağlanınca aktif veri toplar."
+    ];
+    if (!CONFIG.apifyToken && items.length === 0) warnings.push("APIFY_TOKEN eklenmediği için browser/proxy fallback çalışmadı.");
+
     return {
       ok:true,
       mode:"cloud_autopilot_discovery",
@@ -1624,12 +1772,9 @@ async function runRadar(userId, params){
       query,
       count:items.length,
       items,
+      provider_required: items.length === 0 && !CONFIG.apifyToken ? {provider:"Apify", variable:"APIFY_TOKEN", reason:"Trendyol Railway IP'den arama/kategori taramasını 403 ile engelledi."} : null,
       diagnostics,
-      warnings:[
-        "Exact satış sayısı üretilmedi.",
-        "API araması boş dönerse Trendyol HTML ürün linki fallback devreye girer.",
-        "Shopify/Ads/Alibaba/Yerli adapterları canlı sağlayıcı bağlanınca aktif veri toplar."
-      ]
+      warnings
     };
   } catch(e) {
     error = e?.message || "radar_error";
@@ -1637,6 +1782,7 @@ async function runRadar(userId, params){
     return {ok:false, mode:"cloud_autopilot_discovery", run_id:runId, source:"Trendyol", query, error, items:[], diagnostics};
   }
 }
+
 
 
 async function listOpportunities(userId, limit=50){
@@ -1657,16 +1803,16 @@ async function listAlertsM4(userId, limit=50){
 
 async function dashboardM4(userId){
   if (!pool || !dbReady) return {ok:true, version:CONFIG.version,
-    philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true, radar_find_fix:true, counts:{db:false}};
+    philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true, radar_find_fix:true, browser_radar_apify:true, counts:{db:false}};
   const q = async(sql,params=[]) => Number((await dbQuery(sql,params)).rows[0]?.count || 0);
   return {ok:true, app:CONFIG.app, version:CONFIG.version,
-    philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true, radar_find_fix:true, counts:{
+    philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true, radar_find_fix:true, browser_radar_apify:true, counts:{
     discovered_products: await q(`SELECT COUNT(*) FROM discovered_products WHERE user_id=$1`,[userId]),
     alerts: await q(`SELECT COUNT(*) FROM alerts WHERE user_id=$1`,[userId]),
     saved_products: await q(`SELECT COUNT(*) FROM saved_products WHERE user_id=$1`,[userId]),
     scan_runs: await q(`SELECT COUNT(*) FROM scan_runs WHERE user_id=$1`,[userId]),
     high_score: await q(`SELECT COUNT(*) FROM discovered_products WHERE user_id=$1 AND score>=70`,[userId])
-  }, env:{openai:!!CONFIG.openaiKey, db_ready:dbReady, trend_yol:true, radar_find_fix:true}};
+  }, env:{openai:!!CONFIG.openaiKey, db_ready:dbReady, trend_yol:true, radar_find_fix:true, browser_radar_apify:true, apify_token_present:!!CONFIG.apifyToken}};
 }
 
 async function sourceHealthM4(){
@@ -1705,7 +1851,7 @@ function status(){
     philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true,
     time:now(),
     uptime_seconds:Math.round(process.uptime()),
-    milestone:"M4_1_RADAR_FIND_FIX",
+    milestone:"M4_1_BROWSER_RADAR_APIFY",
     endpoints:{
       status:"GET /",
       ai_room:"GET/POST /ai-room",
@@ -1725,6 +1871,7 @@ function status(){
       opportunities:"GET /opportunities",
       alerts:"GET /alerts",
       source_health:"GET /source-health",
+      browser_radar_test:"GET /browser-radar/test",
       adapters:"GET /adapters"
     },
     env:{
@@ -1742,6 +1889,9 @@ function status(){
       full_scope_loaded:true,
       auto_product_discovery:true,
       radar_find_fix:true,
+      browser_radar_apify:true,
+      apify_token_present:!!CONFIG.apifyToken,
+      apify_actor_id:CONFIG.apifyActorId,
       cloud_autopilot_worker:true,
       opportunity_engine:true,
       momentum_engine:true,
@@ -1857,6 +2007,20 @@ const server = http.createServer(async(req,res)=>{
     if(req.method === "GET" && url.pathname === "/feature-matrix") return send(res,200,featureMatrix());
     if(req.method === "GET" && url.pathname === "/dashboard") return send(res,200,await dashboardM4(getUserId(req,url,{})));
     if(req.method === "GET" && url.pathname === "/source-health") return send(res,200,await sourceHealthM4());
+
+
+    if(url.pathname === "/browser-radar/test") {
+      const userId = CONFIG.defaultUserId;
+      const q = safeText(url.searchParams.get("query") || "okul çantası");
+      const page = Math.max(1, Math.min(3, Number(url.searchParams.get("page") || 1)));
+      const diagnostics = {apify_pages:[], apify_runs:[], product_page_errors:[]};
+      try {
+        const items = await collectTrendyolFromApify(q, page, 5, diagnostics);
+        return send(res,200,{ok:true, version:CONFIG.version, query:q, count:items.length, items, diagnostics});
+      } catch(e) {
+        return send(res,200,{ok:false, version:CONFIG.version, query:q, error:e?.message || "browser_radar_test_error", diagnostics, required:{APIFY_TOKEN:!CONFIG.apifyToken}});
+      }
+    }
 
     if(url.pathname === "/radar/run") {
       const body = req.method === "POST" ? await readBody(req) : {};
