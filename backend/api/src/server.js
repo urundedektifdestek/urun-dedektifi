@@ -6,7 +6,7 @@ const PORT = Number(process.env.PORT || 8080);
 
 const CONFIG = {
   app: process.env.PUBLIC_API_NAME || "Ürün Dedektifi API",
-  version: "4.1.4-m4.1-apify-link-extract-fix",
+  version: "4.1.5-m4.1-apify-dom-extract-fix",
   openaiKey: process.env.OPENAI_API_KEY || "",
   openaiModel: process.env.OPENAI_MODEL || "gpt-5-mini",
   apiToken: process.env.API_TOKEN || "",
@@ -983,7 +983,7 @@ async function analyze(req,res,body,params,urlObj){
     id:id("analysis"),
     app:CONFIG.app,
     version:CONFIG.version,
-    philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true, radar_find_fix:true, browser_radar_apify:true, apify_link_extract_fix:true,
+    philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true, radar_find_fix:true, browser_radar_apify:true, apify_link_extract_fix:true, apify_dom_extract_fix:true, apify_dom_extract_fix:true,
     created_at:now(),
     user_id:userId,
     input:{message,productText,productUrl,profile},
@@ -1504,13 +1504,16 @@ function apifyActorPath(){
 function buildApifyWebScraperInput(query, page=1, maxLinks=80){
   const startUrl = buildTrendyolSearchUrl(query, page);
 
-  // M4.1.4: Trendyol search page can render products dynamically.
-  // The old pageFunction ran, but returned link_count 0.
-  // This one scrolls, checks anchors, scans page HTML, scans scripts/window state,
-  // and extracts any Trendyol product URL containing "-p-{id}".
+  // M4.1.5:
+  // apify/web-scraper pageFunction runs inside the browser page context.
+  // M4.1.4 used context.page, so debug showed htmlLength: 0.
+  // This version uses document/window directly.
   const pageFunction = String.raw`async function pageFunction(context) {
-    const { request, page } = context;
-    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+    const { request } = context;
+    const wait = async (ms) => {
+      if (context.waitFor) return await context.waitFor(ms);
+      return await new Promise(r => setTimeout(r, ms));
+    };
 
     const normalize = (u) => {
       if (!u) return '';
@@ -1521,13 +1524,14 @@ function buildApifyWebScraperInput(query, page=1, maxLinks=80){
         .replace(/%2F/gi, '/')
         .trim();
 
-      // Remove wrappers/trailing junk from HTML/JSON fragments
       u = u.replace(/^["'({[]+/, '');
       u = u.split('"')[0].split("'")[0].split('<')[0].split(' ')[0].split('\\\\')[0];
 
       if (u.startsWith('//')) u = 'https:' + u;
       if (u.startsWith('/')) u = 'https://www.trendyol.com' + u;
-      if (!/^https?:\/\//i.test(u) && u.includes('-p-')) u = 'https://www.trendyol.com/' + u.replace(/^\/+/, '');
+      if (!/^https?:\/\//i.test(u) && u.includes('-p-')) {
+        u = 'https://www.trendyol.com/' + u.replace(/^\/+/, '');
+      }
 
       const idx = u.indexOf('https://www.trendyol.com');
       if (idx > 0) u = u.slice(idx);
@@ -1548,90 +1552,102 @@ function buildApifyWebScraperInput(query, page=1, maxLinks=80){
 
       const patterns = [
         /https?:\/\/(?:www\.)?trendyol\.com\/[^"'<>\\s]+-p-\d+[^"'<>\\s]*/gi,
-        /\/[a-z0-9çğıöşüÇĞİÖŞÜ\-_%]+\/[^"'<>\\s]+-p-\d+[^"'<>\\s]*/gi,
+        /\/[a-z0-9çğıöşüÇĞİÖŞÜ\-_%.]+\/[^"'<>\\s]+-p-\d+[^"'<>\\s]*/gi,
         /(?:href|url|productUrl|product_url)["'\s:]+([^"'<>\s]+-p-\d+[^"'<>\s]*)/gi
       ];
 
       for (const re of patterns) {
         let m;
-        while ((m = re.exec(txt)) !== null) {
-          out.push(normalize(m[1] || m[0]));
-        }
+        while ((m = re.exec(txt)) !== null) out.push(normalize(m[1] || m[0]));
       }
       return out;
     };
 
+    const collect = () => {
+      const links = [];
+
+      try {
+        document.querySelectorAll('a[href]').forEach(a => {
+          const h = a.href || a.getAttribute('href') || '';
+          if (h.includes('-p-')) links.push(h);
+        });
+      } catch (e) {}
+
+      try {
+        document.querySelectorAll('[href],[data-url],[data-product-url]').forEach(el => {
+          ['href','data-url','data-product-url','data-href','to'].forEach(attr => {
+            const v = el.getAttribute && el.getAttribute(attr);
+            if (v && String(v).includes('-p-')) links.push(v);
+          });
+        });
+      } catch (e) {}
+
+      try {
+        const html = document.documentElement ? document.documentElement.outerHTML : '';
+        links.push(...scanTextForLinks(html));
+      } catch (e) {}
+
+      try {
+        document.querySelectorAll('script').forEach(s => {
+          const t = s.textContent || '';
+          if (t.includes('-p-') || t.includes('productUrl') || t.includes('products')) {
+            links.push(...scanTextForLinks(t));
+          }
+        });
+      } catch (e) {}
+
+      try {
+        const text = document.body ? document.body.innerText : '';
+        links.push(...scanTextForLinks(text));
+      } catch (e) {}
+
+      return links;
+    };
+
+    const debug = {
+      title: '',
+      finalUrl: '',
+      htmlLength: 0,
+      bodyTextSample: '',
+      readyState: '',
+      anchorCount: 0,
+      productAnchorCount: 0,
+      scriptCount: 0
+    };
+
     let links = [];
-    let debug = { title:'', finalUrl: request.url, htmlLength:0, bodyTextSample:'' };
 
     try {
-      if (page) {
-        await page.setViewport({ width: 1366, height: 900 }).catch(() => {});
-        await sleep(3500);
+      await wait(3500);
 
-        // Some product grids appear only after scroll.
-        for (let i = 0; i < 6; i++) {
-          await page.evaluate(() => window.scrollBy(0, Math.max(700, window.innerHeight || 800))).catch(() => {});
-          await sleep(900);
-        }
-
-        debug.title = await page.title().catch(() => '');
-        debug.finalUrl = page.url();
-
-        const anchorLinks = await page.evaluate(() => {
-          const arr = [];
-          document.querySelectorAll('a[href]').forEach(a => {
-            const h = a.href || a.getAttribute('href') || '';
-            if (h.includes('-p-')) arr.push(h);
-          });
-          return arr;
-        }).catch(() => []);
-        links.push(...anchorLinks);
-
-        const html = await page.content().catch(() => '');
-        debug.htmlLength = html.length;
-        links.push(...scanTextForLinks(html));
-
-        const stateText = await page.evaluate(() => {
-          const pieces = [];
-          try {
-            const keys = [
-              '__NEXT_DATA__',
-              '__SEARCH_APP_INITIAL_STATE__',
-              '__PRODUCT_DETAIL_APP_INITIAL_STATE__',
-              '__INITIAL_STATE__',
-              '__SERVER_CONTEXT__'
-            ];
-            for (const k of keys) {
-              if (window[k]) pieces.push(JSON.stringify(window[k]));
-            }
-          } catch (e) {}
-
-          try {
-            document.querySelectorAll('script').forEach(s => {
-              const t = s.textContent || '';
-              if (t.includes('-p-') || t.includes('productUrl') || t.includes('products')) pieces.push(t);
-            });
-          } catch (e) {}
-
-          try {
-            pieces.push(document.body ? document.body.innerText.slice(0, 5000) : '');
-          } catch (e) {}
-
-          return pieces.join('\n').slice(0, 2500000);
-        }).catch(() => '');
-
-        debug.bodyTextSample = stateText.slice(0, 250);
-        links.push(...scanTextForLinks(stateText));
+      for (let i = 0; i < 8; i++) {
+        try { window.scrollBy(0, Math.max(750, window.innerHeight || 900)); } catch (e) {}
+        await wait(700);
+        links.push(...collect());
       }
+
+      await wait(1200);
+      links.push(...collect());
+
+      debug.title = document.title || '';
+      debug.finalUrl = location.href || request.url;
+      debug.readyState = document.readyState || '';
+      debug.anchorCount = document.querySelectorAll('a[href]').length;
+      debug.productAnchorCount = Array.from(document.querySelectorAll('a[href]')).filter(a => String(a.href || a.getAttribute('href') || '').includes('-p-')).length;
+      debug.scriptCount = document.querySelectorAll('script').length;
+      const html = document.documentElement ? document.documentElement.outerHTML : '';
+      debug.htmlLength = html.length;
+      debug.bodyTextSample = document.body ? (document.body.innerText || '').slice(0, 350) : '';
+
     } catch (e) {
       return {
         ok:false,
-        source:'apify_web_scraper',
+        source:'apify_web_scraper_dom',
         url: request.url,
         error:String(e && e.message || e),
         link_count:0,
         links:[],
+        product_urls:[],
         debug
       };
     }
@@ -1644,9 +1660,9 @@ function buildApifyWebScraperInput(query, page=1, maxLinks=80){
 
     return {
       ok:true,
-      source:'apify_web_scraper',
+      source:'apify_web_scraper_dom',
       url: request.url,
-      final_url: debug.finalUrl,
+      final_url: debug.finalUrl || request.url,
       query: ${JSON.stringify(query)},
       page:${page},
       link_count: links.length,
@@ -1661,15 +1677,15 @@ function buildApifyWebScraperInput(query, page=1, maxLinks=80){
     maxRequestsPerCrawl: 1,
     maxConcurrency: 1,
     maxRequestRetries: 1,
-    requestHandlerTimeoutSecs: 75,
-    navigationTimeoutSecs: 45,
+    requestHandlerTimeoutSecs: 120,
+    navigationTimeoutSecs: 75,
+    pageLoadTimeoutSecs: 75,
     pageFunction,
     proxyConfiguration: { useApifyProxy: true },
     browserLog: false,
     debugLog: false
   };
 }
-
 async function runApifyActorSync(input, diagnostics){
   if (!CONFIG.apifyToken) throw new Error("APIFY_TOKEN yok");
   const actor = apifyActorPath();
@@ -1930,16 +1946,16 @@ async function listAlertsM4(userId, limit=50){
 
 async function dashboardM4(userId){
   if (!pool || !dbReady) return {ok:true, version:CONFIG.version,
-    philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true, radar_find_fix:true, browser_radar_apify:true, apify_link_extract_fix:true, counts:{db:false}};
+    philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true, radar_find_fix:true, browser_radar_apify:true, apify_link_extract_fix:true, apify_dom_extract_fix:true, apify_dom_extract_fix:true, counts:{db:false}};
   const q = async(sql,params=[]) => Number((await dbQuery(sql,params)).rows[0]?.count || 0);
   return {ok:true, app:CONFIG.app, version:CONFIG.version,
-    philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true, radar_find_fix:true, browser_radar_apify:true, apify_link_extract_fix:true, counts:{
+    philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true, radar_find_fix:true, browser_radar_apify:true, apify_link_extract_fix:true, apify_dom_extract_fix:true, apify_dom_extract_fix:true, counts:{
     discovered_products: await q(`SELECT COUNT(*) FROM discovered_products WHERE user_id=$1`,[userId]),
     alerts: await q(`SELECT COUNT(*) FROM alerts WHERE user_id=$1`,[userId]),
     saved_products: await q(`SELECT COUNT(*) FROM saved_products WHERE user_id=$1`,[userId]),
     scan_runs: await q(`SELECT COUNT(*) FROM scan_runs WHERE user_id=$1`,[userId]),
     high_score: await q(`SELECT COUNT(*) FROM discovered_products WHERE user_id=$1 AND score>=70`,[userId])
-  }, env:{openai:!!CONFIG.openaiKey, db_ready:dbReady, trend_yol:true, radar_find_fix:true, browser_radar_apify:true, apify_link_extract_fix:true, apify_token_present:!!CONFIG.apifyToken}};
+  }, env:{openai:!!CONFIG.openaiKey, db_ready:dbReady, trend_yol:true, radar_find_fix:true, browser_radar_apify:true, apify_link_extract_fix:true, apify_dom_extract_fix:true, apify_dom_extract_fix:true, apify_token_present:!!CONFIG.apifyToken}};
 }
 
 async function sourceHealthM4(){
@@ -2016,7 +2032,7 @@ function status(){
       full_scope_loaded:true,
       auto_product_discovery:true,
       radar_find_fix:true,
-      browser_radar_apify:true, apify_link_extract_fix:true,
+      browser_radar_apify:true, apify_link_extract_fix:true, apify_dom_extract_fix:true, apify_dom_extract_fix:true,
       apify_token_present:!!CONFIG.apifyToken,
       apify_actor_id:CONFIG.apifyActorId,
       cloud_autopilot_worker:true,
@@ -2025,7 +2041,7 @@ function status(){
       alerts_engine:true,
       serpapi_next:!!CONFIG.serpapiKey,
       apify_next:!!CONFIG.apifyToken,
-      apify_link_extract_fix:true
+      apify_link_extract_fix:true, apify_dom_extract_fix:true
     },
     policy:{
       exact_sales_count:"never_hallucinate",
