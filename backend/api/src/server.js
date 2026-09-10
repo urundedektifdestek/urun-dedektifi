@@ -6,7 +6,7 @@ const PORT = Number(process.env.PORT || 8080);
 
 const CONFIG = {
   app: process.env.PUBLIC_API_NAME || "Ürün Dedektifi API",
-  version: "4.1.0-m4.1-working-core",
+  version: "4.1.2-m4.1-radar-find-fix",
   openaiKey: process.env.OPENAI_API_KEY || "",
   openaiModel: process.env.OPENAI_MODEL || "gpt-5-mini",
   apiToken: process.env.API_TOKEN || "",
@@ -981,7 +981,7 @@ async function analyze(req,res,body,params,urlObj){
     id:id("analysis"),
     app:CONFIG.app,
     version:CONFIG.version,
-    philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true,
+    philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true, radar_find_fix:true,
     created_at:now(),
     user_id:userId,
     input:{message,productText,productUrl,profile},
@@ -1396,6 +1396,99 @@ async function fetchTrendyolSearch(query, page=1){
   try { return JSON.parse(r.html); } catch { return {html:r.html}; }
 }
 
+
+function queryVariants(q){
+  const raw = safeText(q);
+  const out = [raw];
+  const lower = raw.toLowerCase();
+  const tr = lower
+    .replaceAll("cantasi", "çantası")
+    .replaceAll("canta", "çanta")
+    .replaceAll("okul cantası", "okul çantası")
+    .replaceAll("ahsap", "ahşap")
+    .replaceAll("isik", "ışık")
+    .replaceAll("urun", "ürün")
+    .replaceAll("cocuk", "çocuk")
+    .replaceAll("bebek arabasi", "bebek arabası");
+  if (tr && tr !== raw) out.push(tr);
+  return uniq(out).slice(0, 3);
+}
+
+async function fetchTrendyolSearchHtml(query, page=1){
+  const enc = encodeURIComponent(query);
+  const url = `https://www.trendyol.com/sr?q=${enc}&qt=${enc}&st=${enc}&os=1&pi=${page}`;
+  const r = await fetchWithTimeout(url, 20000);
+  if (!r.ok) throw new Error(`Trendyol sr HTML HTTP ${r.status}`);
+  return r.html || "";
+}
+
+function extractTrendyolLinksFromHtml(html){
+  const links = [];
+  const patterns = [
+    /href=["']([^"']*-p-\d+[^"']*)["']/gi,
+    /"url"\s*:\s*"([^"]*-p-\d+[^"]*)"/gi,
+    /"productUrl"\s*:\s*"([^"]*-p-\d+[^"]*)"/gi,
+    /(\/[^"'<>\\\s]+-p-\d+[^"'<>\\\s]*)/gi
+  ];
+  for (const re of patterns) {
+    let m;
+    while ((m = re.exec(html)) !== null) {
+      const u = normalizeTrendyolUrl(decodeEntities(m[1]));
+      if (u && u.includes("trendyol.com") && u.includes("-p-")) links.push(u);
+    }
+  }
+  return uniq(links).slice(0, 80);
+}
+
+function productEvidenceToRadarProduct(ev, query){
+  const rating = ev?.rating || {};
+  const price = ev?.price || {};
+  const productId = extractContentIdFromUrl(ev?.final_url || ev?.url) || extractContentIdFromUrl(ev?.url) || id("trendyol");
+  return {
+    product_id: productId,
+    source: ev?.source || "Trendyol",
+    product_url: ev?.final_url || ev?.url || "",
+    title: ev?.title || "Trendyol ürün adayı",
+    brand: ev?.brand_name || "",
+    seller: cleanSellerNameM4(ev?.seller_name || ""),
+    image: Array.isArray(ev?.images) && ev.images.length ? ev.images[0] : "",
+    current_price: parseMoney(price.visible_price || price.amount || price.value || ""),
+    rating_value: Number(rating.rating_value || rating.value || 0) || null,
+    review_count: Number(rating.review_count || rating.rating_count || 0) || null,
+    query,
+    exact_sales_count: null,
+    visible_sales_signal: ev?.visible_sales_signal || null,
+    categories: ev?.categories || [],
+    raw: ev,
+    evidence_source: "trendyol_product_page_fallback"
+  };
+}
+
+async function collectTrendyolFromApi(query, page, diagnostics){
+  const data = await fetchTrendyolSearch(query, page);
+  const candidates = collectCandidateObjects(data, []);
+  diagnostics.api_pages.push({query, page, candidates:candidates.length});
+  return candidates.map(c => parseTrendyolProduct(c, query));
+}
+
+async function collectTrendyolFromHtmlFallback(query, page, limit, diagnostics){
+  const html = await fetchTrendyolSearchHtml(query, page);
+  const links = extractTrendyolLinksFromHtml(html);
+  diagnostics.html_pages.push({query, page, links:links.length});
+  const products = [];
+  for (const link of links.slice(0, Math.max(limit * 2, limit))) {
+    try {
+      const ev = await readProductEvidence(link);
+      if (ev && ev.ok) products.push(productEvidenceToRadarProduct(ev, query));
+      if (products.length >= limit) break;
+    } catch(e) {
+      diagnostics.product_page_errors.push({url:link, error:e?.message || "product_page_error"});
+    }
+  }
+  return products;
+}
+
+
 async function previousSnapshot(productId, userId){
   if (!pool || !dbReady || !productId) return null;
   const r = await dbQuery(`SELECT price, rating_value, review_count FROM product_snapshots WHERE product_id=$1 AND user_id=$2 ORDER BY created_at DESC LIMIT 1`, [productId,userId]);
@@ -1469,39 +1562,82 @@ async function storeDiscoveryProduct(p, userId, runId, params){
   return item;
 }
 
+
 async function runRadar(userId, params){
   const query = safeText(params.query || params.q || "okul çantası");
   const limit = Math.max(1, Math.min(50, Number(params.limit || 20)));
   const pages = Math.max(1, Math.min(3, Number(params.pages || 1)));
   const runId = id("run");
+  const diagnostics = {strategy:"api_then_html_product_page_fallback", api_pages:[], html_pages:[], product_page_errors:[], query_variants:queryVariants(query)};
   if (pool && dbReady) await dbQuery(`INSERT INTO scan_runs(id,user_id,source,query,status,params) VALUES($1,$2,$3,$4,$5,$6::jsonb)`, [runId,userId,"Trendyol",query,"running",JSON.stringify(params)]);
   const seen = new Set();
   const collected = [];
   let error = "";
   try {
-    for (let page=1; page<=pages && collected.length<limit; page++) {
-      const data = await fetchTrendyolSearch(query, page);
-      const candidates = collectCandidateObjects(data, []);
-      for (const c of candidates) {
-        const p = parseTrendyolProduct(c, query);
-        const pid = p.product_id || extractContentIdFromUrl(p.product_url);
-        if (!pid || seen.has(pid)) continue;
-        seen.add(pid);
-        collected.push(p);
+    for (const qv of diagnostics.query_variants) {
+      for (let page=1; page<=pages && collected.length<limit; page++) {
+        try {
+          const apiProducts = await collectTrendyolFromApi(qv, page, diagnostics);
+          for (const p of apiProducts) {
+            const pid = p.product_id || extractContentIdFromUrl(p.product_url);
+            if (!pid || seen.has(pid)) continue;
+            seen.add(pid);
+            collected.push(p);
+            if (collected.length >= limit) break;
+          }
+        } catch(e) {
+          diagnostics.api_pages.push({query:qv, page, error:e?.message || "api_error"});
+        }
+      }
+      if (collected.length >= limit) break;
+    }
+
+    if (collected.length === 0) {
+      for (const qv of diagnostics.query_variants) {
+        for (let page=1; page<=pages && collected.length<limit; page++) {
+          try {
+            const htmlProducts = await collectTrendyolFromHtmlFallback(qv, page, limit - collected.length, diagnostics);
+            for (const p of htmlProducts) {
+              const pid = p.product_id || extractContentIdFromUrl(p.product_url);
+              if (!pid || seen.has(pid)) continue;
+              seen.add(pid);
+              collected.push(p);
+              if (collected.length >= limit) break;
+            }
+          } catch(e) {
+            diagnostics.html_pages.push({query:qv, page, error:e?.message || "html_error"});
+          }
+        }
         if (collected.length >= limit) break;
       }
     }
+
     const items = [];
-    for (const p of collected) items.push(await storeDiscoveryProduct(p, userId, runId, params));
+    for (const p of collected.slice(0, limit)) items.push(await storeDiscoveryProduct(p, userId, runId, params));
     items.sort((a,b) => (b.score||0) - (a.score||0));
     if (pool && dbReady) await dbQuery(`UPDATE scan_runs SET status='success', finished_at=NOW(), found_count=$1, saved_count=$2 WHERE id=$3`, [collected.length,items.length,runId]);
-    return {ok:true, mode:"cloud_autopilot_discovery", run_id:runId, source:"Trendyol", query, count:items.length, items, warnings:["Exact satış sayısı üretilmedi.", "Shopify/Ads/Alibaba/Yerli adapterları canlı sağlayıcı bağlanınca aktif veri toplar."]};
+    return {
+      ok:true,
+      mode:"cloud_autopilot_discovery",
+      run_id:runId,
+      source:"Trendyol",
+      query,
+      count:items.length,
+      items,
+      diagnostics,
+      warnings:[
+        "Exact satış sayısı üretilmedi.",
+        "API araması boş dönerse Trendyol HTML ürün linki fallback devreye girer.",
+        "Shopify/Ads/Alibaba/Yerli adapterları canlı sağlayıcı bağlanınca aktif veri toplar."
+      ]
+    };
   } catch(e) {
     error = e?.message || "radar_error";
     if (pool && dbReady) await dbQuery(`UPDATE scan_runs SET status='error', finished_at=NOW(), error=$1 WHERE id=$2`, [error,runId]);
-    return {ok:false, mode:"cloud_autopilot_discovery", run_id:runId, source:"Trendyol", query, error, items:[]};
+    return {ok:false, mode:"cloud_autopilot_discovery", run_id:runId, source:"Trendyol", query, error, items:[], diagnostics};
   }
 }
+
 
 async function listOpportunities(userId, limit=50){
   if (pool && dbReady) {
@@ -1521,16 +1657,16 @@ async function listAlertsM4(userId, limit=50){
 
 async function dashboardM4(userId){
   if (!pool || !dbReady) return {ok:true, version:CONFIG.version,
-    philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true, counts:{db:false}};
+    philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true, radar_find_fix:true, counts:{db:false}};
   const q = async(sql,params=[]) => Number((await dbQuery(sql,params)).rows[0]?.count || 0);
   return {ok:true, app:CONFIG.app, version:CONFIG.version,
-    philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true, counts:{
+    philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true, radar_find_fix:true, counts:{
     discovered_products: await q(`SELECT COUNT(*) FROM discovered_products WHERE user_id=$1`,[userId]),
     alerts: await q(`SELECT COUNT(*) FROM alerts WHERE user_id=$1`,[userId]),
     saved_products: await q(`SELECT COUNT(*) FROM saved_products WHERE user_id=$1`,[userId]),
     scan_runs: await q(`SELECT COUNT(*) FROM scan_runs WHERE user_id=$1`,[userId]),
     high_score: await q(`SELECT COUNT(*) FROM discovered_products WHERE user_id=$1 AND score>=70`,[userId])
-  }, env:{openai:!!CONFIG.openaiKey, db_ready:dbReady, trend_yol:true}};
+  }, env:{openai:!!CONFIG.openaiKey, db_ready:dbReady, trend_yol:true, radar_find_fix:true}};
 }
 
 async function sourceHealthM4(){
@@ -1569,7 +1705,7 @@ function status(){
     philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true,
     time:now(),
     uptime_seconds:Math.round(process.uptime()),
-    milestone:"M2_FINAL_BACKEND",
+    milestone:"M4_1_RADAR_FIND_FIX",
     endpoints:{
       status:"GET /",
       ai_room:"GET/POST /ai-room",
@@ -1605,6 +1741,7 @@ function status(){
       api_token_required:!!CONFIG.apiToken,
       full_scope_loaded:true,
       auto_product_discovery:true,
+      radar_find_fix:true,
       cloud_autopilot_worker:true,
       opportunity_engine:true,
       momentum_engine:true,
