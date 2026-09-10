@@ -6,7 +6,7 @@ const PORT = Number(process.env.PORT || 8080);
 
 const CONFIG = {
   app: process.env.PUBLIC_API_NAME || "Ürün Dedektifi API",
-  version: "2.5.0-m2-final-consolidated",
+  version: "4.1.0-m4.1-working-core",
   openaiKey: process.env.OPENAI_API_KEY || "",
   openaiModel: process.env.OPENAI_MODEL || "gpt-5-mini",
   apiToken: process.env.API_TOKEN || "",
@@ -95,6 +95,151 @@ async function initDb(){
       payload JSONB NOT NULL DEFAULT '{}'::jsonb
     );
     CREATE INDEX IF NOT EXISTS idx_decisions_user_created ON decisions(user_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS user_profiles (
+      user_id TEXT PRIMARY KEY,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      budget NUMERIC,
+      min_margin NUMERIC,
+      max_sellers INTEGER,
+      min_rating NUMERIC,
+      risk_level TEXT,
+      sourcing_preference TEXT,
+      categories JSONB NOT NULL DEFAULT '[]'::jsonb,
+      preferences JSONB NOT NULL DEFAULT '{}'::jsonb
+    );
+
+    CREATE TABLE IF NOT EXISTS source_registry (
+      source TEXT PRIMARY KEY,
+      status TEXT NOT NULL DEFAULT 'configured',
+      health TEXT NOT NULL DEFAULT 'unknown',
+      last_checked_at TIMESTAMPTZ,
+      last_error TEXT,
+      config JSONB NOT NULL DEFAULT '{}'::jsonb
+    );
+
+    CREATE TABLE IF NOT EXISTS scan_runs (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL DEFAULT 'demo',
+      source TEXT NOT NULL,
+      query TEXT,
+      status TEXT NOT NULL,
+      started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      finished_at TIMESTAMPTZ,
+      found_count INTEGER NOT NULL DEFAULT 0,
+      saved_count INTEGER NOT NULL DEFAULT 0,
+      error TEXT,
+      params JSONB NOT NULL DEFAULT '{}'::jsonb
+    );
+    CREATE INDEX IF NOT EXISTS idx_scan_runs_user_started ON scan_runs(user_id, started_at DESC);
+
+    CREATE TABLE IF NOT EXISTS discovered_products (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL DEFAULT 'demo',
+      source TEXT NOT NULL,
+      product_url TEXT,
+      title TEXT,
+      brand TEXT,
+      seller TEXT,
+      image TEXT,
+      first_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      current_price NUMERIC,
+      rating_value NUMERIC,
+      review_count INTEGER,
+      visible_sales_signal TEXT,
+      exact_sales_count INTEGER,
+      score INTEGER NOT NULL DEFAULT 0,
+      decision TEXT,
+      momentum_label TEXT,
+      categories JSONB NOT NULL DEFAULT '[]'::jsonb,
+      evidence JSONB NOT NULL DEFAULT '{}'::jsonb,
+      ai_council JSONB NOT NULL DEFAULT '{}'::jsonb
+    );
+    CREATE INDEX IF NOT EXISTS idx_discovered_user_last ON discovered_products(user_id, last_seen DESC);
+    CREATE INDEX IF NOT EXISTS idx_discovered_score ON discovered_products(score DESC);
+    CREATE INDEX IF NOT EXISTS idx_discovered_source ON discovered_products(source);
+
+    CREATE TABLE IF NOT EXISTS product_snapshots (
+      id TEXT PRIMARY KEY,
+      product_id TEXT NOT NULL,
+      user_id TEXT NOT NULL DEFAULT 'demo',
+      source TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      price NUMERIC,
+      rating_value NUMERIC,
+      review_count INTEGER,
+      seller TEXT,
+      image TEXT,
+      raw JSONB NOT NULL DEFAULT '{}'::jsonb
+    );
+    CREATE INDEX IF NOT EXISTS idx_snapshots_product_created ON product_snapshots(product_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS momentum_events (
+      id TEXT PRIMARY KEY,
+      product_id TEXT NOT NULL,
+      user_id TEXT NOT NULL DEFAULT 'demo',
+      source TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      event_type TEXT NOT NULL,
+      severity TEXT NOT NULL DEFAULT 'info',
+      message TEXT,
+      delta JSONB NOT NULL DEFAULT '{}'::jsonb
+    );
+    CREATE INDEX IF NOT EXISTS idx_momentum_user_created ON momentum_events(user_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS alerts (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL DEFAULT 'demo',
+      product_id TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      alert_type TEXT NOT NULL,
+      severity TEXT NOT NULL DEFAULT 'info',
+      title TEXT,
+      message TEXT,
+      seen BOOLEAN NOT NULL DEFAULT FALSE,
+      payload JSONB NOT NULL DEFAULT '{}'::jsonb
+    );
+    CREATE INDEX IF NOT EXISTS idx_alerts_user_created ON alerts(user_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS notification_outbox (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL DEFAULT 'demo',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      channel TEXT NOT NULL DEFAULT 'in_app',
+      status TEXT NOT NULL DEFAULT 'pending',
+      title TEXT,
+      body TEXT,
+      payload JSONB NOT NULL DEFAULT '{}'::jsonb
+    );
+
+    CREATE TABLE IF NOT EXISTS sourcing_offers (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL DEFAULT 'demo',
+      product_id TEXT,
+      source TEXT,
+      supplier_name TEXT,
+      unit_price NUMERIC,
+      currency TEXT,
+      moq INTEGER,
+      lead_time TEXT,
+      oem BOOLEAN,
+      private_label BOOLEAN,
+      confidence NUMERIC,
+      url TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      raw JSONB NOT NULL DEFAULT '{}'::jsonb
+    );
+
+    INSERT INTO source_registry(source,status,health,config) VALUES
+      ('Trendyol','configured','ready','{"mode":"public_search_and_product_page"}'::jsonb),
+      ('Shopify','adapter_ready','needs_targets','{"requires":"shopify_store_urls_or_search_provider"}'::jsonb),
+      ('Meta Ads','adapter_ready','needs_provider','{"requires":"Meta Ad Library/API or browser worker"}'::jsonb),
+      ('Alibaba','adapter_ready','needs_provider','{"requires":"supplier search provider/API/manual quote"}'::jsonb),
+      ('Yerli Üretim','adapter_ready','needs_provider','{"requires":"supplier directory or manual offers"}'::jsonb)
+    ON CONFLICT (source) DO NOTHING;
+
   `;
   await dbQuery(sql);
   dbReady = true;
@@ -352,6 +497,16 @@ function extractBrand(product, html=""){
   return m?.[1] ? decodeEntities(m[1]) : "";
 }
 
+function cleanSellerNameM4(s){
+  s = decodeEntities(safeText(s));
+  if (!s) return "";
+  if (s.length > 80) return "";
+  const bad = ["{merchant}", "\u003c", "config", "installment", "payment", "landing", "layoutPageType", "PRODUCT_DETAIL", "price.history"];
+  if (bad.some(x => s.toLowerCase().includes(x.toLowerCase()))) return "";
+  if (/[{}\[\]]/.test(s)) return "";
+  return s;
+}
+
 function extractSellerHint(html){
   const patterns = [
     /"merchantName"\s*:\s*"([^"]+)"/i,
@@ -485,7 +640,7 @@ async function readProductEvidence(productUrl){
     const price = extractPrice(html, productLd);
     const rating = extractRating(productLd, html);
     const visibleSales = extractVisibleSalesSignal(html);
-    const seller = extractSellerHint(html);
+    const seller = cleanSellerNameM4(extractSellerHint(html));
     const brand = extractBrand(productLd, html);
     const categories = extractCategoryHints(html);
 
@@ -826,6 +981,7 @@ async function analyze(req,res,body,params,urlObj){
     id:id("analysis"),
     app:CONFIG.app,
     version:CONFIG.version,
+    philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true,
     created_at:now(),
     user_id:userId,
     input:{message,productText,productUrl,profile},
@@ -1048,11 +1204,369 @@ async function searchHistory(req,res,url){
   return send(res,200,{ok:true,source:"memory",q,count:items.length,items});
 }
 
+
+/* -------------------- M4 Automatic Product Discovery / Radar -------------------- */
+
+function featureMatrix(){
+  return {
+    ok:true,
+    app:CONFIG.app,
+    version:CONFIG.version,
+    philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true,
+    philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true,
+    features:[
+      {name:"Otomatik Ürün Keşfi",status:"live",note:"/radar/run Trendyol arama akışından ürün adaylarını toplar."},
+      {name:"Trendyol Market Intelligence",status:"partial",note:"Başlık, fiyat, puan, yorum sayısı, görsel, marka ve public sayfa kanıtı."},
+      {name:"Ürün Snapshot Geçmişi",status:"live",note:"Fiyat/puan/yorum sayısı zaman içinde product_snapshots tablosuna yazılır."},
+      {name:"Momentum Motoru",status:"live",note:"Yeni ürün, yorum artışı, fiyat değişimi ve skor hareketi hesaplanır."},
+      {name:"Fırsat Skoru",status:"live",note:"Talep sinyali, puan, fiyat, yeni ürün ve momentumdan 0-100 skor üretir."},
+      {name:"Fırsat Alarmları",status:"live",note:"Yeni ürün, yüksek skor ve momentum için kalıcı alert üretir."},
+      {name:"AI Council",status:CONFIG.openaiKey?"live":"partial",note:"OpenAI bağlıysa ilk adayları tartışır; diğer modeller adapter mimarisinde hazır."},
+      {name:"Beni Bekleyenler",status:"live",note:"Kaydedilen ürünler Postgres'te tutulur."},
+      {name:"Shopify Intelligence",status:"adapter_ready",note:"Kayıt ve ekran yapısı hazır; canlı mağaza/arama providerı bağlanmalı."},
+      {name:"Meta / Instagram Ads",status:"adapter_ready",note:"Reklam yoğunluğu satış sayısı sayılmaz; provider bağlanınca ad momentum sinyali üretilir."},
+      {name:"Alibaba Sourcing",status:"adapter_ready",note:"Tedarikçi teklif yapısı hazır; canlı API/quote sağlayıcı bağlanmalı."},
+      {name:"Yerli Üretim",status:"adapter_ready",note:"Yerli teklif yapısı hazır; tedarikçi dizini veya manuel teklif akışı bağlanmalı."},
+      {name:"Maliyet / ROI",status:"partial",note:"Şema ve karar alanı hazır; komisyon/kargo/vergi kanıtı girilmeden rakam uydurmaz."},
+      {name:"SaaS / Auth / Plan",status:"schema_ready",note:"Token yapısı var; tam üyelik ve ödeme sağlayıcısı sonraki aşama."},
+      {name:"Owner Intelligence",status:"partial",note:"Dashboard, source health, run geçmişi ve alert sayıları hazır."}
+    ]
+  };
+}
+
+function parseMoney(v){
+  if (v === null || v === undefined) return null;
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  let s = String(v).replace("TL","").replace("₺","").replace(/[^0-9,\.]/g,"").trim();
+  if (!s) return null;
+  if (s.includes(",")) s = s.replace(/\./g,"").replace(",",".");
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+}
+
+function tFirst(o, keys){
+  if (!o || typeof o !== "object") return "";
+  for (const k of keys) {
+    const v = o[k];
+    if (v === null || v === undefined) continue;
+    if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
+      const s = flattenClean(v, 300);
+      if (s) return s;
+    }
+  }
+  return "";
+}
+
+function tNestedName(o, key){
+  const n = o?.[key];
+  if (n && typeof n === "object") return tFirst(n, ["name","title"]);
+  return "";
+}
+
+function normalizeTrendyolUrl(u){
+  u = safeText(u).replace(/\\u002F/g,"/").replace(/\\\//g,"/");
+  if (!u) return "";
+  if (u.startsWith("//")) u = "https:" + u;
+  if (u.startsWith("/")) u = "https://www.trendyol.com" + u;
+  if (!u.startsWith("http") && u.includes("-p-")) u = "https://www.trendyol.com/" + u;
+  const q = u.indexOf("?"); if (q > 0) u = u.slice(0,q);
+  return u;
+}
+
+function normalizeTrendyolImage(u){
+  u = safeText(u).replace(/\\u002F/g,"/").replace(/\\\//g,"/");
+  if (!u) return "";
+  if (u.startsWith("//")) return "https:" + u;
+  if (u.startsWith("http")) return u;
+  if (u.startsWith("ty") || u.startsWith("mnresize") || u.startsWith("prod")) return "https://cdn.dsmcdn.com/" + u;
+  return u;
+}
+
+function extractContentIdFromUrl(url){
+  const m = safeText(url).match(/-p-(\d+)/);
+  return m ? m[1] : "";
+}
+
+function findProductImageObj(o){
+  const arr = o?.images || o?.imageUrls || o?.imagesWithOverlay;
+  if (Array.isArray(arr) && arr.length) {
+    const x = arr[0];
+    if (typeof x === "string") return normalizeTrendyolImage(x);
+    if (x?.url) return normalizeTrendyolImage(x.url);
+  }
+  return normalizeTrendyolImage(tFirst(o, ["image","imageUrl","imageUrlTemplate","thumbnail"]));
+}
+
+function findProductPriceObj(o){
+  const direct = tFirst(o,["price","salePrice","sellingPrice","discountedPrice"]);
+  const nDirect = parseMoney(direct); if (nDirect !== null) return nDirect;
+  const p = o?.price || o?.priceInfo || o?.pricing;
+  if (p && typeof p === "object") {
+    const keys = ["discountedPrice","sellingPrice","originalPrice","price","value"];
+    for (const k of keys) {
+      const v = p[k];
+      if (v && typeof v === "object") { const n = parseMoney(tFirst(v,["text","value","price","amount"])); if (n !== null) return n; }
+      const n = parseMoney(v); if (n !== null) return n;
+    }
+  }
+  return null;
+}
+
+function findProductRatingObj(o){
+  const rs = o?.ratingScore || o?.aggregateRating || o?.rating;
+  if (rs && typeof rs === "object") {
+    const n = Number(rs.averageRating || rs.ratingValue || rs.value || rs.rating || 0);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }
+  const n = Number(tFirst(o,["ratingValue","averageRating","rating"]));
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function findReviewCountObj(o){
+  const rs = o?.ratingScore || o?.aggregateRating || o?.socialProof;
+  if (rs && typeof rs === "object") {
+    const n = Number(rs.totalCount || rs.reviewCount || rs.commentCount || rs.ratingCount || rs.count || -1);
+    if (Number.isFinite(n) && n >= 0) return Math.round(n);
+  }
+  const n = Number(tFirst(o,["reviewCount","commentCount","ratingCount","totalCount"]));
+  return Number.isFinite(n) && n >= 0 ? Math.round(n) : null;
+}
+
+function collectCandidateObjects(node, out=[]){
+  if (!node || out.length > 120) return out;
+  if (Array.isArray(node)) { for (const x of node) collectCandidateObjects(x,out); return out; }
+  if (typeof node === "object") {
+    const url = tFirst(node,["url","productUrl","link"]);
+    const title = tFirst(node,["name","title","productName"]);
+    if ((title || node.contentId || node.id) && (normalizeTrendyolUrl(url).includes("-p-") || node.contentId || node.productId)) out.push(node);
+    for (const v of Object.values(node)) collectCandidateObjects(v,out);
+  }
+  return out;
+}
+
+function parseTrendyolProduct(o, query){
+  const url = normalizeTrendyolUrl(tFirst(o,["url","productUrl","link"]));
+  const idv = safeText(o?.contentId || o?.productId || o?.id || extractContentIdFromUrl(url));
+  return {
+    product_id:idv,
+    source:"Trendyol",
+    product_url:url,
+    title:tFirst(o,["name","title","productName"]),
+    brand:tNestedName(o,"brand") || tFirst(o,["brandName"]),
+    seller:cleanSellerNameM4(tNestedName(o,"merchant") || tFirst(o,["merchantName","sellerName"])),
+    image:findProductImageObj(o),
+    current_price:findProductPriceObj(o),
+    rating_value:findProductRatingObj(o),
+    review_count:findReviewCountObj(o),
+    query,
+    exact_sales_count:null,
+    visible_sales_signal:null,
+    categories:[],
+    raw:o
+  };
+}
+
+function scoreOpportunity(p, delta={}, params={}){
+  let score = 24;
+  const rating = Number(p.rating_value || 0);
+  const rc = Number(p.review_count || 0);
+  const price = Number(p.current_price || 0);
+  const budget = Number(params.budget || 0);
+  if (rating >= 4.8) score += 18; else if (rating >= 4.5) score += 14; else if (rating >= 4.2) score += 9; else if (rating > 0) score += 3;
+  if (rc >= 1000) score += 16; else if (rc >= 300) score += 13; else if (rc >= 100) score += 10; else if (rc >= 30) score += 6; else if (rc >= 1) score += 3;
+  if (delta.is_new) score += 12;
+  if (delta.review_delta > 0) score += Math.min(18, 6 + Math.floor(delta.review_delta / 10));
+  if (delta.price_delta_pct < -5) score += 5;
+  if (price > 0 && budget > 0 && price <= budget) score += 7;
+  if (p.image) score += 4;
+  if (!p.current_price) score -= 6;
+  if (!p.rating_value) score -= 5;
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+function decisionLabel(score){
+  return score>=82 ? "GOLD" : score>=70 ? "GÜÇLÜ ADAY" : score>=55 ? "İNCELE" : score>=40 ? "RİSKLİ" : "PASS";
+}
+
+async function fetchTrendyolSearch(query, page=1){
+  const enc = encodeURIComponent(query);
+  const url = `https://public.trendyol.com/discovery-web-searchgw-service/v2/api/infinite-scroll/sr?culture=tr-TR&storefrontId=1&channelId=1&q=${enc}&pi=${page}`;
+  const r = await fetchWithTimeout(url, 18000);
+  if (!r.ok) throw new Error(`Trendyol search HTTP ${r.status}`);
+  try { return JSON.parse(r.html); } catch { return {html:r.html}; }
+}
+
+async function previousSnapshot(productId, userId){
+  if (!pool || !dbReady || !productId) return null;
+  const r = await dbQuery(`SELECT price, rating_value, review_count FROM product_snapshots WHERE product_id=$1 AND user_id=$2 ORDER BY created_at DESC LIMIT 1`, [productId,userId]);
+  return r.rows[0] || null;
+}
+
+function calcDelta(prev, p){
+  const out = {is_new:!prev, price_delta:null, price_delta_pct:null, rating_delta:null, review_delta:null};
+  if (!prev) return out;
+  const price = Number(p.current_price || 0), old = Number(prev.price || 0);
+  if (price>0 && old>0) { out.price_delta = +(price-old).toFixed(2); out.price_delta_pct = +(((price-old)/old)*100).toFixed(2); }
+  const rating = Number(p.rating_value || 0), oldr = Number(prev.rating_value || 0);
+  if (rating>0 && oldr>0) out.rating_delta = +(rating-oldr).toFixed(2);
+  const rc = Number(p.review_count ?? -1), oldc = Number(prev.review_count ?? -1);
+  if (rc>=0 && oldc>=0) out.review_delta = rc-oldc;
+  return out;
+}
+
+function momentumLabel(delta){
+  if (delta.is_new) return "Yeni ürün";
+  if ((delta.review_delta || 0) >= 50) return "Hızlı yorum artışı";
+  if ((delta.review_delta || 0) > 0) return `Yorum +${delta.review_delta}`;
+  if ((delta.price_delta_pct || 0) <= -10) return "Fiyat düştü";
+  if ((delta.price_delta_pct || 0) >= 10) return "Fiyat arttı";
+  return "İzleniyor";
+}
+
+async function storeDiscoveryProduct(p, userId, runId, params){
+  const productId = p.product_id || extractContentIdFromUrl(p.product_url) || id("trendyol");
+  p.product_id = productId;
+  const prev = await previousSnapshot(productId, userId);
+  const delta = calcDelta(prev, p);
+  const score = scoreOpportunity(p, delta, params);
+  const decision = decisionLabel(score);
+  const momentum = momentumLabel(delta);
+  const evidence = {
+    source:p.source,
+    query:p.query,
+    method:"trendyol_public_search",
+    confidence:p.title && p.product_url ? 0.78 : 0.48,
+    delta,
+    run_id:runId,
+    exact_sales_count:null,
+    warning:"Exact satış sayısı uydurulmaz. Yorum artışı ve görünür sinyaller momentum olarak yorumlanır."
+  };
+  const item = {...p, id:productId, score, decision, momentum_label:momentum, evidence, first_seen:null, last_seen:null};
+  if (pool && dbReady) {
+    await dbQuery(`INSERT INTO discovered_products
+      (id,user_id,source,product_url,title,brand,seller,image,first_seen,last_seen,current_price,rating_value,review_count,visible_sales_signal,exact_sales_count,score,decision,momentum_label,categories,evidence)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW(),NOW(),$9,$10,$11,$12,NULL,$13,$14,$15,$16::jsonb,$17::jsonb)
+      ON CONFLICT (id) DO UPDATE SET
+        last_seen=NOW(), product_url=EXCLUDED.product_url, title=EXCLUDED.title, brand=EXCLUDED.brand, seller=EXCLUDED.seller,
+        image=EXCLUDED.image, current_price=EXCLUDED.current_price, rating_value=EXCLUDED.rating_value,
+        review_count=EXCLUDED.review_count, score=EXCLUDED.score, decision=EXCLUDED.decision,
+        momentum_label=EXCLUDED.momentum_label, evidence=EXCLUDED.evidence`,
+      [productId,userId,p.source,p.product_url,p.title,p.brand,p.seller,p.image,p.current_price,p.rating_value,p.review_count,p.visible_sales_signal,score,decision,momentum,JSON.stringify(p.categories||[]),JSON.stringify(evidence)]);
+    await dbQuery(`INSERT INTO product_snapshots(id,product_id,user_id,source,price,rating_value,review_count,seller,image,raw) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)`,
+      [id("snap"),productId,userId,p.source,p.current_price,p.rating_value,p.review_count,p.seller,p.image,JSON.stringify(p.raw||{})]);
+    if (delta.is_new || score >= 70 || (delta.review_delta || 0) > 0) {
+      const type = delta.is_new ? "new_product" : (delta.review_delta || 0) > 0 ? "momentum" : "high_score";
+      const sev = score >= 82 ? "high" : score >= 70 ? "medium" : "info";
+      await dbQuery(`INSERT INTO momentum_events(id,product_id,user_id,source,event_type,severity,message,delta) VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb)`,
+        [id("momentum"),productId,userId,p.source,type,sev,`${p.title || productId}: ${momentum}`,JSON.stringify(delta)]);
+      await dbQuery(`INSERT INTO alerts(id,user_id,product_id,alert_type,severity,title,message,payload) VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb)`,
+        [id("alert"),userId,productId,type,sev,p.title || "Ürün adayı",`${momentum} • skor ${score}`,JSON.stringify({product:item,delta,run_id:runId})]);
+    }
+  }
+  item.delta = delta;
+  item.first_seen = delta.is_new ? now() : undefined;
+  item.last_seen = now();
+  return item;
+}
+
+async function runRadar(userId, params){
+  const query = safeText(params.query || params.q || "okul çantası");
+  const limit = Math.max(1, Math.min(50, Number(params.limit || 20)));
+  const pages = Math.max(1, Math.min(3, Number(params.pages || 1)));
+  const runId = id("run");
+  if (pool && dbReady) await dbQuery(`INSERT INTO scan_runs(id,user_id,source,query,status,params) VALUES($1,$2,$3,$4,$5,$6::jsonb)`, [runId,userId,"Trendyol",query,"running",JSON.stringify(params)]);
+  const seen = new Set();
+  const collected = [];
+  let error = "";
+  try {
+    for (let page=1; page<=pages && collected.length<limit; page++) {
+      const data = await fetchTrendyolSearch(query, page);
+      const candidates = collectCandidateObjects(data, []);
+      for (const c of candidates) {
+        const p = parseTrendyolProduct(c, query);
+        const pid = p.product_id || extractContentIdFromUrl(p.product_url);
+        if (!pid || seen.has(pid)) continue;
+        seen.add(pid);
+        collected.push(p);
+        if (collected.length >= limit) break;
+      }
+    }
+    const items = [];
+    for (const p of collected) items.push(await storeDiscoveryProduct(p, userId, runId, params));
+    items.sort((a,b) => (b.score||0) - (a.score||0));
+    if (pool && dbReady) await dbQuery(`UPDATE scan_runs SET status='success', finished_at=NOW(), found_count=$1, saved_count=$2 WHERE id=$3`, [collected.length,items.length,runId]);
+    return {ok:true, mode:"cloud_autopilot_discovery", run_id:runId, source:"Trendyol", query, count:items.length, items, warnings:["Exact satış sayısı üretilmedi.", "Shopify/Ads/Alibaba/Yerli adapterları canlı sağlayıcı bağlanınca aktif veri toplar."]};
+  } catch(e) {
+    error = e?.message || "radar_error";
+    if (pool && dbReady) await dbQuery(`UPDATE scan_runs SET status='error', finished_at=NOW(), error=$1 WHERE id=$2`, [error,runId]);
+    return {ok:false, mode:"cloud_autopilot_discovery", run_id:runId, source:"Trendyol", query, error, items:[]};
+  }
+}
+
+async function listOpportunities(userId, limit=50){
+  if (pool && dbReady) {
+    const r = await dbQuery(`SELECT id, source, product_url, title, brand, seller, image, first_seen, last_seen, current_price, rating_value, review_count, visible_sales_signal, exact_sales_count, score, decision, momentum_label, evidence, ai_council FROM discovered_products WHERE user_id=$1 ORDER BY score DESC, last_seen DESC LIMIT $2`, [userId,limit]);
+    return {ok:true, source:"postgres", count:r.rows.length, items:r.rows};
+  }
+  return {ok:true, source:"memory", count:0, items:[]};
+}
+
+async function listAlertsM4(userId, limit=50){
+  if (pool && dbReady) {
+    const r = await dbQuery(`SELECT id, created_at, product_id, alert_type, severity, title, message, seen, payload FROM alerts WHERE user_id=$1 ORDER BY created_at DESC LIMIT $2`, [userId,limit]);
+    return {ok:true, source:"postgres", count:r.rows.length, items:r.rows};
+  }
+  return {ok:true, source:"memory", count:0, items:[]};
+}
+
+async function dashboardM4(userId){
+  if (!pool || !dbReady) return {ok:true, version:CONFIG.version,
+    philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true, counts:{db:false}};
+  const q = async(sql,params=[]) => Number((await dbQuery(sql,params)).rows[0]?.count || 0);
+  return {ok:true, app:CONFIG.app, version:CONFIG.version,
+    philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true, counts:{
+    discovered_products: await q(`SELECT COUNT(*) FROM discovered_products WHERE user_id=$1`,[userId]),
+    alerts: await q(`SELECT COUNT(*) FROM alerts WHERE user_id=$1`,[userId]),
+    saved_products: await q(`SELECT COUNT(*) FROM saved_products WHERE user_id=$1`,[userId]),
+    scan_runs: await q(`SELECT COUNT(*) FROM scan_runs WHERE user_id=$1`,[userId]),
+    high_score: await q(`SELECT COUNT(*) FROM discovered_products WHERE user_id=$1 AND score>=70`,[userId])
+  }, env:{openai:!!CONFIG.openaiKey, db_ready:dbReady, trend_yol:true}};
+}
+
+async function sourceHealthM4(){
+  if (pool && dbReady) {
+    const r = await dbQuery(`SELECT source,status,health,last_checked_at,last_error,config FROM source_registry ORDER BY source`);
+    return {ok:true, source:"postgres", items:r.rows};
+  }
+  return {ok:true, items:[{source:"Trendyol",status:"configured",health:"unknown"}]};
+}
+
+async function saveProfileM4(userId, body){
+  if (!pool || !dbReady) return {ok:false,error:"db_not_ready"};
+  await dbQuery(`INSERT INTO user_profiles(user_id,budget,min_margin,max_sellers,min_rating,risk_level,sourcing_preference,categories,preferences)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb)
+    ON CONFLICT(user_id) DO UPDATE SET updated_at=NOW(), budget=EXCLUDED.budget, min_margin=EXCLUDED.min_margin, max_sellers=EXCLUDED.max_sellers, min_rating=EXCLUDED.min_rating, risk_level=EXCLUDED.risk_level, sourcing_preference=EXCLUDED.sourcing_preference, categories=EXCLUDED.categories, preferences=EXCLUDED.preferences`,
+    [userId, body.budget || null, body.min_margin || body.minMargin || null, body.max_sellers || body.maxSellers || null, body.min_rating || body.minRating || null, safeText(body.risk_level || body.riskLevel || "medium"), safeText(body.sourcing_preference || body.sourcingPreference || "hybrid"), JSON.stringify(body.categories || []), JSON.stringify(body.preferences || body)]);
+  return {ok:true,user_id:userId};
+}
+
+async function autopilotTickM4(userId){
+  let categories = ["okul çantası", "ahşap oyuncak", "kamp lambası"];
+  if (pool && dbReady) {
+    const r = await dbQuery(`SELECT categories FROM user_profiles WHERE user_id=$1`, [userId]);
+    if (Array.isArray(r.rows[0]?.categories) && r.rows[0].categories.length) categories = r.rows[0].categories;
+  }
+  const runs = [];
+  for (const cat of categories.slice(0,4)) runs.push(await runRadar(userId, {query:cat, limit:12, pages:1, autopilot:true}));
+  return {ok:true, mode:"autopilot_tick", user_id:userId, categories, runs};
+}
+
 function status(){
   return {
     ok:true,
     app:CONFIG.app,
     version:CONFIG.version,
+    philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true,
     time:now(),
     uptime_seconds:Math.round(process.uptime()),
     milestone:"M2_FINAL_BACKEND",
@@ -1068,6 +1582,13 @@ function status(){
       decision:"POST /decision",
       decisions:"GET /decisions",
       db_test:"GET /db-test",
+      dashboard:"GET /dashboard",
+      feature_matrix:"GET /feature-matrix",
+      radar_run:"GET/POST /radar/run",
+      autopilot_tick:"GET/POST /autopilot/tick",
+      opportunities:"GET /opportunities",
+      alerts:"GET /alerts",
+      source_health:"GET /source-health",
       adapters:"GET /adapters"
     },
     env:{
@@ -1082,6 +1603,12 @@ function status(){
       db_ready:dbReady,
       db_error:dbError,
       api_token_required:!!CONFIG.apiToken,
+      full_scope_loaded:true,
+      auto_product_discovery:true,
+      cloud_autopilot_worker:true,
+      opportunity_engine:true,
+      momentum_engine:true,
+      alerts_engine:true,
       serpapi_next:!!CONFIG.serpapiKey,
       apify_next:!!CONFIG.apifyToken
     },
@@ -1103,6 +1630,7 @@ function adaptersStatus(){
   return {
     ok:true,
     version:CONFIG.version,
+    philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true,
     adapters:{
       trendyol_link:{
         status:"active",
@@ -1157,7 +1685,8 @@ const server = http.createServer(async(req,res)=>{
       const body = req.method === "POST" ? await readBody(req) : {};
       const productUrl = safeText(body.url || body.productUrl || url.searchParams.get("url"));
       const evidence = await readProductEvidence(productUrl);
-      return send(res, evidence.ok ? 200 : 422, {ok:evidence.ok, app:CONFIG.app, version:CONFIG.version, product_evidence:evidence});
+      return send(res, evidence.ok ? 200 : 422, {ok:evidence.ok, app:CONFIG.app, version:CONFIG.version,
+    philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true, product_evidence:evidence});
     }
 
     if(["/ai-room","/scan","/api/scan/new"].includes(url.pathname)){
@@ -1186,6 +1715,37 @@ const server = http.createServer(async(req,res)=>{
     }
 
     if(url.pathname === "/decisions" && req.method === "GET") return listDecisions(req,res,url);
+
+
+    if(req.method === "GET" && url.pathname === "/feature-matrix") return send(res,200,featureMatrix());
+    if(req.method === "GET" && url.pathname === "/dashboard") return send(res,200,await dashboardM4(getUserId(req,url,{})));
+    if(req.method === "GET" && url.pathname === "/source-health") return send(res,200,await sourceHealthM4());
+
+    if(url.pathname === "/radar/run") {
+      const body = req.method === "POST" ? await readBody(req) : {};
+      const params = Object.fromEntries(url.searchParams.entries());
+      return send(res,200,await runRadar(getUserId(req,url,body), {...params, ...body}));
+    }
+
+    if(url.pathname === "/autopilot/tick") {
+      const body = req.method === "POST" ? await readBody(req) : {};
+      return send(res,200,await autopilotTickM4(getUserId(req,url,body)));
+    }
+
+    if(req.method === "GET" && url.pathname === "/opportunities") {
+      const limit = Math.max(1, Math.min(100, Number(url.searchParams.get("limit") || 50)));
+      return send(res,200,await listOpportunities(getUserId(req,url,{}), limit));
+    }
+
+    if(req.method === "GET" && url.pathname === "/alerts") {
+      const limit = Math.max(1, Math.min(100, Number(url.searchParams.get("limit") || 50)));
+      return send(res,200,await listAlertsM4(getUserId(req,url,{}), limit));
+    }
+
+    if(url.pathname === "/profile" && req.method === "POST") {
+      const body = await readBody(req);
+      return send(res,200,await saveProfileM4(getUserId(req,url,body), body));
+    }
 
     return send(res,404,{ok:false,error:"endpoint_not_found",path:url.pathname});
   }catch(e){
