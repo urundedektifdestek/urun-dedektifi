@@ -6,7 +6,7 @@ const PORT = Number(process.env.PORT || 8080);
 
 const CONFIG = {
   app: process.env.PUBLIC_API_NAME || "Ürün Dedektifi API",
-  version: "4.1.7-m4.1-normalize-product-fields-fix",
+  version: "4.1.8-m4.1-actor-schema-and-seller-fix",
   openaiKey: process.env.OPENAI_API_KEY || "",
   openaiModel: process.env.OPENAI_MODEL || "gpt-5-mini",
   apiToken: process.env.API_TOKEN || "",
@@ -983,7 +983,7 @@ async function analyze(req,res,body,params,urlObj){
     id:id("analysis"),
     app:CONFIG.app,
     version:CONFIG.version,
-    philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true, radar_find_fix:true, browser_radar_apify:true, apify_link_extract_fix:true, apify_dom_extract_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, normalize_product_fields_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, normalize_product_fields_fix:true, apify_dom_extract_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, normalize_product_fields_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, normalize_product_fields_fix:true,
+    philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true, radar_find_fix:true, browser_radar_apify:true, apify_link_extract_fix:true, apify_dom_extract_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, actor_schema_and_seller_fix:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, actor_schema_and_seller_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, actor_schema_and_seller_fix:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, actor_schema_and_seller_fix:true, apify_dom_extract_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, actor_schema_and_seller_fix:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, actor_schema_and_seller_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, actor_schema_and_seller_fix:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, actor_schema_and_seller_fix:true,
     created_at:now(),
     user_id:userId,
     input:{message,productText,productUrl,profile},
@@ -1505,17 +1505,30 @@ function toActorId(v){
   return safeText(v).replace("/", "~");
 }
 
+function mapSolidcodeMinRating(value){
+  const n = Number(value || 0);
+  if (!Number.isFinite(n) || n <= 0) return "any";
+  if (n >= 4.5) return "4.5";
+  if (n >= 4) return "4";
+  if (n >= 3) return "3";
+  return "any";
+}
+
 function buildDedicatedTrendyolInputs(query, limit, params={}){
   const max = Math.max(1, Math.min(50, Number(limit || 10)));
   const maxPrice = Number(params.budget || params.maxPrice || 0);
-  const minRating = Number(params.minRating || 0);
+  const minRatingNumber = Number(params.minRating || 0);
   const searchUrl = buildTrendyolSearchUrl(query, 1);
 
-  // Different Trendyol actors use different input schemas.
-  // We try safe schemas in order and parse whatever structured items come back.
-  const commonFilters = {};
-  if (Number.isFinite(maxPrice) && maxPrice > 0) commonFilters.maxPrice = Math.round(maxPrice);
-  if (Number.isFinite(minRating) && minRating > 0) commonFilters.minRating = String(minRating);
+  const solidcodeFilters = {};
+  if (Number.isFinite(maxPrice) && maxPrice > 0) solidcodeFilters.maxPrice = Math.round(maxPrice);
+  // solidcode actor accepts only: "any", "3", "4", "4.5"
+  solidcodeFilters.minRating = mapSolidcodeMinRating(minRatingNumber);
+
+  const maximedupreFilters = {};
+  if (Number.isFinite(maxPrice) && maxPrice > 0) maximedupreFilters.maxPrice = Math.round(maxPrice);
+  // maximedupre actor expects minRating as number.
+  if (Number.isFinite(minRatingNumber) && minRatingNumber > 0) maximedupreFilters.minRating = minRatingNumber;
 
   return [
     {
@@ -1528,7 +1541,7 @@ function buildDedicatedTrendyolInputs(query, limit, params={}){
         includeReviews:false,
         maxReviewsPerProduct:0,
         sort:"best_match",
-        ...commonFilters
+        ...solidcodeFilters
       }
     },
     {
@@ -1542,7 +1555,7 @@ function buildDedicatedTrendyolInputs(query, limit, params={}){
         includeReviews:false,
         maxReviewsPerProduct:0,
         sort:"relevance",
-        ...commonFilters
+        ...maximedupreFilters
       }
     },
     {
@@ -1556,32 +1569,6 @@ function buildDedicatedTrendyolInputs(query, limit, params={}){
       }
     }
   ];
-}
-
-function parseNumberSmart(v){
-  if (v === null || v === undefined || v === "") return null;
-  if (typeof v === "number") return Number.isFinite(v) ? v : null;
-
-  let s = String(v).trim();
-  if (!s) return null;
-
-  const upper = s.toUpperCase();
-  let multiplier = 1;
-  if (upper.includes("K")) multiplier = 1000;
-  if (upper.includes("M")) multiplier = 1000000;
-
-  s = s.replace(/[^\d.,+-]/g, "");
-  if (!s) return null;
-
-  // Turkish format: 1.003,97 -> 1003.97
-  if (s.includes(",") && s.includes(".")) {
-    s = s.replace(/\./g, "").replace(",", ".");
-  } else if (s.includes(",")) {
-    s = s.replace(",", ".");
-  }
-  // If only dot exists, keep dot as decimal separator. Do NOT strip it.
-  const n = Number(s);
-  return Number.isFinite(n) ? n * multiplier : null;
 }
 
 function firstNum(...vals){
@@ -1784,8 +1771,11 @@ function normalizeDedicatedTrendyolItem(item, query){
     sellerObj.merchantName,
     raw.sellerName,
     raw.merchantName,
-    raw.seller_name
+    raw.seller_name,
+    raw.seller?.name,
+    raw.merchant?.name
   ));
+  const merchant_id = firstText(raw.merchantId, raw.sellerId, raw.identifiers?.merchant_id, raw.identifiers?.seller_id);
 
   if (!productId && !productUrl && !title) return null;
 
@@ -1795,7 +1785,9 @@ function normalizeDedicatedTrendyolItem(item, query){
     product_url: productUrl,
     title: title || "Trendyol ürün adayı",
     brand,
-    seller,
+    seller:seller || (merchant_id ? "Satıcı ID: " + merchant_id : ""),
+    merchant_id,
+    seller_display:seller || (merchant_id ? "Satıcı ID: " + merchant_id : ""),
     image: images[0] || "",
     images,
     current_price: visiblePrice,
@@ -1843,6 +1835,22 @@ function extractProductsFromDedicatedItems(items, query){
   return out;
 }
 
+function backendFilterProductsByParams(products, params={}){
+  const maxPrice = Number(params.budget || params.maxPrice || 0);
+  const minRating = Number(params.minRating || 0);
+  const requireImage = String(params.requireImage || "").toLowerCase() === "true";
+
+  return (products || []).filter(p => {
+    if (Number.isFinite(maxPrice) && maxPrice > 0 && Number(p.current_price || 0) > maxPrice) return false;
+    // Ratingi hiç yoksa silme; yeni ürünü radardan kaçırmayalım, ama puanı düşük kalsın.
+    if (Number.isFinite(minRating) && minRating > 0 && p.rating_value !== null && p.rating_value !== undefined) {
+      if (Number(p.rating_value) < minRating) return false;
+    }
+    if (requireImage && !p.image) return false;
+    return true;
+  });
+}
+
 async function runDedicatedTrendyolActor(query, limit, params, diagnostics){
   if (!CONFIG.apifyToken) return [];
 
@@ -1862,7 +1870,8 @@ async function runDedicatedTrendyolActor(query, limit, params, diagnostics){
       let data = null;
       try { data = JSON.parse(text); } catch { data = text; }
 
-      const products = r.ok ? extractProductsFromDedicatedItems(data, query) : [];
+      const extractedProducts = r.ok ? extractProductsFromDedicatedItems(data, query) : [];
+      const products = backendFilterProductsByParams(extractedProducts, params);
       diagnostics.dedicated_actor_runs = diagnostics.dedicated_actor_runs || [];
       diagnostics.dedicated_actor_runs.push({
         actor,
@@ -1871,6 +1880,7 @@ async function runDedicatedTrendyolActor(query, limit, params, diagnostics){
         ok:r.ok,
         item_count:Array.isArray(data) ? data.length : null,
         products:products.length,
+        extracted_products:typeof extractedProducts !== "undefined" ? extractedProducts.length : 0,
         sample:Array.isArray(data) && data[0] ? JSON.stringify(data[0]).slice(0, 500) : String(text).slice(0, 500)
       });
 
@@ -2351,16 +2361,16 @@ async function listAlertsM4(userId, limit=50){
 
 async function dashboardM4(userId){
   if (!pool || !dbReady) return {ok:true, version:CONFIG.version,
-    philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true, radar_find_fix:true, browser_radar_apify:true, apify_link_extract_fix:true, apify_dom_extract_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, normalize_product_fields_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, normalize_product_fields_fix:true, apify_dom_extract_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, normalize_product_fields_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, normalize_product_fields_fix:true, counts:{db:false}};
+    philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true, radar_find_fix:true, browser_radar_apify:true, apify_link_extract_fix:true, apify_dom_extract_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, actor_schema_and_seller_fix:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, actor_schema_and_seller_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, actor_schema_and_seller_fix:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, actor_schema_and_seller_fix:true, apify_dom_extract_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, actor_schema_and_seller_fix:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, actor_schema_and_seller_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, actor_schema_and_seller_fix:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, actor_schema_and_seller_fix:true, counts:{db:false}};
   const q = async(sql,params=[]) => Number((await dbQuery(sql,params)).rows[0]?.count || 0);
   return {ok:true, app:CONFIG.app, version:CONFIG.version,
-    philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true, radar_find_fix:true, browser_radar_apify:true, apify_link_extract_fix:true, apify_dom_extract_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, normalize_product_fields_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, normalize_product_fields_fix:true, apify_dom_extract_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, normalize_product_fields_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, normalize_product_fields_fix:true, counts:{
+    philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true, radar_find_fix:true, browser_radar_apify:true, apify_link_extract_fix:true, apify_dom_extract_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, actor_schema_and_seller_fix:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, actor_schema_and_seller_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, actor_schema_and_seller_fix:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, actor_schema_and_seller_fix:true, apify_dom_extract_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, actor_schema_and_seller_fix:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, actor_schema_and_seller_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, actor_schema_and_seller_fix:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, actor_schema_and_seller_fix:true, counts:{
     discovered_products: await q(`SELECT COUNT(*) FROM discovered_products WHERE user_id=$1`,[userId]),
     alerts: await q(`SELECT COUNT(*) FROM alerts WHERE user_id=$1`,[userId]),
     saved_products: await q(`SELECT COUNT(*) FROM saved_products WHERE user_id=$1`,[userId]),
     scan_runs: await q(`SELECT COUNT(*) FROM scan_runs WHERE user_id=$1`,[userId]),
     high_score: await q(`SELECT COUNT(*) FROM discovered_products WHERE user_id=$1 AND score>=70`,[userId])
-  }, env:{openai:!!CONFIG.openaiKey, db_ready:dbReady, trend_yol:true, radar_find_fix:true, browser_radar_apify:true, apify_link_extract_fix:true, apify_dom_extract_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, normalize_product_fields_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, normalize_product_fields_fix:true, apify_dom_extract_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, normalize_product_fields_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, normalize_product_fields_fix:true, apify_token_present:!!CONFIG.apifyToken}};
+  }, env:{openai:!!CONFIG.openaiKey, db_ready:dbReady, trend_yol:true, radar_find_fix:true, browser_radar_apify:true, apify_link_extract_fix:true, apify_dom_extract_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, actor_schema_and_seller_fix:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, actor_schema_and_seller_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, actor_schema_and_seller_fix:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, actor_schema_and_seller_fix:true, apify_dom_extract_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, actor_schema_and_seller_fix:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, actor_schema_and_seller_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, actor_schema_and_seller_fix:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, actor_schema_and_seller_fix:true, apify_token_present:!!CONFIG.apifyToken}};
 }
 
 async function sourceHealthM4(){
@@ -2437,7 +2447,7 @@ function status(){
       full_scope_loaded:true,
       auto_product_discovery:true,
       radar_find_fix:true,
-      browser_radar_apify:true, apify_link_extract_fix:true, apify_dom_extract_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, normalize_product_fields_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, normalize_product_fields_fix:true, apify_dom_extract_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, normalize_product_fields_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, normalize_product_fields_fix:true,
+      browser_radar_apify:true, apify_link_extract_fix:true, apify_dom_extract_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, actor_schema_and_seller_fix:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, actor_schema_and_seller_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, actor_schema_and_seller_fix:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, actor_schema_and_seller_fix:true, apify_dom_extract_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, actor_schema_and_seller_fix:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, actor_schema_and_seller_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, actor_schema_and_seller_fix:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, actor_schema_and_seller_fix:true,
       apify_token_present:!!CONFIG.apifyToken,
       apify_actor_id:CONFIG.apifyActorId, apify_trendyol_actor_id:CONFIG.apifyTrendyolActorId,
       cloud_autopilot_worker:true,
@@ -2446,7 +2456,7 @@ function status(){
       alerts_engine:true,
       serpapi_next:!!CONFIG.serpapiKey,
       apify_next:!!CONFIG.apifyToken,
-      apify_link_extract_fix:true, apify_dom_extract_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true
+      apify_link_extract_fix:true, apify_dom_extract_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true
     },
     policy:{
       exact_sales_count:"never_hallucinate",
