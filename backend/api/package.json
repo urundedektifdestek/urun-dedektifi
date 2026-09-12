@@ -1,0 +1,19 @@
+{
+  "name": "urun-dedektifi-api",
+  "version": "4.4.0",
+  "private": true,
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node src/server.js",
+    "check": "node --check src/server.js",
+    "worker": "node src/server.js --worker-once"
+  },
+  "dependencies": {
+    "pg": "^8.13.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
