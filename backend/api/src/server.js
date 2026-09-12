@@ -1060,7 +1060,7 @@ async function analyze(req,res,body,params,urlObj){
     id:id("analysis"),
     app:CONFIG.app,
     version:CONFIG.version,
-    m43_module_infra:true,
+    m43_module_infra:true,module_detail_flow:true,ai_product_hunter_engine:true, ai_product_hunter_engine:true,
     philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true, radar_find_fix:true, browser_radar_apify:true, apify_link_extract_fix:true, apify_dom_extract_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true,
       m43_module_infrastructure:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, apify_dom_extract_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true,
     created_at:now(),
@@ -1293,7 +1293,7 @@ function featureMatrix(){
     ok:true,
     app:CONFIG.app,
     version:CONFIG.version,
-    m43_module_infra:true,
+    m43_module_infra:true,module_detail_flow:true,ai_product_hunter_engine:true, ai_product_hunter_engine:true,
     philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true,
     philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true,
     features:[
@@ -2499,11 +2499,11 @@ async function listAlertsM4(userId, limit=50){
 
 async function dashboardM4(userId){
   if (!pool || !dbReady) return {ok:true, version:CONFIG.version,
-    m43_module_infra:true,
+    m43_module_infra:true,module_detail_flow:true,ai_product_hunter_engine:true, ai_product_hunter_engine:true,
     philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true, radar_find_fix:true, browser_radar_apify:true, apify_link_extract_fix:true, apify_dom_extract_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, apify_dom_extract_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, counts:{db:false}};
   const q = async(sql,params=[]) => Number((await dbQuery(sql,params)).rows[0]?.count || 0);
   return {ok:true, app:CONFIG.app, version:CONFIG.version,
-    m43_module_infra:true,
+    m43_module_infra:true,module_detail_flow:true,ai_product_hunter_engine:true, ai_product_hunter_engine:true,
     philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true, radar_find_fix:true, browser_radar_apify:true, apify_link_extract_fix:true, apify_dom_extract_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, apify_dom_extract_fix:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, dedicated_trendyol_actor:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, normalize_product_fields_fix:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, actor_schema_and_seller_fix:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, fast_radar_actor_priority_fix:true, fast_limit_no_slow_fallback_fix:true, usable_product_hunter:true, counts:{
     discovered_products: await q(`SELECT COUNT(*) FROM discovered_products WHERE user_id=$1`,[userId]),
     alerts: await q(`SELECT COUNT(*) FROM alerts WHERE user_id=$1`,[userId]),
@@ -2546,7 +2546,7 @@ function status(){
     ok:true,
     app:CONFIG.app,
     version:CONFIG.version,
-    m43_module_infra:true,
+    m43_module_infra:true,module_detail_flow:true,ai_product_hunter_engine:true, ai_product_hunter_engine:true,
     philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true,
     time:now(),
     uptime_seconds:Math.round(process.uptime()),
@@ -2626,7 +2626,7 @@ function adaptersStatus(){
   return {
     ok:true,
     version:CONFIG.version,
-    m43_module_infra:true,
+    m43_module_infra:true,module_detail_flow:true,ai_product_hunter_engine:true, ai_product_hunter_engine:true,
     philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true,
     adapters:{
       trendyol_link:{
@@ -2969,6 +2969,248 @@ function moduleStatusM43(){
 
 /* -------------------- Router -------------------- */
 
+
+
+/* -------------------- M4.4 AI Product Hunter Engine -------------------- */
+
+function m44Seeds(input){
+  const raw = safeText(input.category || input.query || input.keyword || input.q || "ev düzenleyici, pratik mutfak, oto aksesuar, bebek güvenlik");
+  const base = raw.split(",").map(x=>safeText(x)).filter(Boolean);
+  const pool = [
+    "pratik mutfak düzenleyici",
+    "dolap içi organizer",
+    "araç içi organizer",
+    "bebek güvenlik ürünü",
+    "kedi oyuncak aksesuar",
+    "kamp lambası organizer",
+    "kişiselleştirilebilir hediye",
+    "ahşap masa aksesuarı",
+    "banyo düzenleyici",
+    "spor egzersiz aksesuarı",
+    "seyahat çantası organizer",
+    "çocuk eğitici oyuncak"
+  ];
+  const all = [];
+  for (const x of base) if (x && !all.includes(x)) all.push(x);
+  const rotate = Math.floor(Date.now()/3600000) % pool.length;
+  const rotated = pool.slice(rotate).concat(pool.slice(0,rotate));
+  for (const x of rotated) if (!all.includes(x)) all.push(x);
+  return all.slice(0, 6);
+}
+
+function m44PriceNumber(v){
+  if (v == null) return null;
+  let s = String(v).replace(/TL|tl|₺|\s/g,"").replace(/[^0-9,.\-]/g,"");
+  if (!s) return null;
+  const lastComma = s.lastIndexOf(",");
+  const lastDot = s.lastIndexOf(".");
+  if (lastComma >= 0 && lastDot >= 0) {
+    if (lastComma > lastDot) s = s.replace(/\./g,"").replace(",",".");
+    else s = s.replace(/,/g,"");
+  } else if (lastComma >= 0) {
+    const dec = s.length - lastComma - 1;
+    s = dec === 3 ? s.replace(/,/g,"") : s.replace(",",".");
+  } else if (lastDot >= 0) {
+    const dec = s.length - lastDot - 1;
+    if (dec === 3) s = s.replace(/\./g,"");
+  }
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+}
+
+function m44Pass(item, criteria){
+  const reasons = [];
+  const reject = [];
+  const price = m44PriceNumber(item.current_price ?? item.price);
+  const rating = m44PriceNumber(item.rating_value ?? item.rating);
+  const reviews = safeInt(item.review_count ?? item.reviews_count, 0) || 0;
+  const sellerCount = safeInt(item.seller_count ?? item.sellers_count, null);
+
+  const maxPrice = m44PriceNumber(criteria.max_price || criteria.budget || criteria.maxPrice);
+  const minRating = m44PriceNumber(criteria.min_rating || criteria.minRating);
+  const minReviews = safeInt(criteria.min_reviews || criteria.minReviews, null);
+  const maxSellers = safeInt(criteria.max_sellers || criteria.maxSellers, null);
+  const exclude = safeText(criteria.exclude || "").toLowerCase().split(",").map(x=>safeText(x)).filter(Boolean);
+  const title = safeText(item.title || item.name || "").toLowerCase();
+
+  if (maxPrice !== null && price !== null && price > maxPrice) reject.push("fiyat kriter üstü");
+  if (minRating !== null && rating !== null && rating < minRating) reject.push("puan düşük");
+  if (minReviews !== null && reviews < minReviews) reject.push("yorum düşük");
+  if (maxSellers !== null && sellerCount !== null && sellerCount > maxSellers) reject.push("satıcı sayısı yüksek");
+  for (const ex of exclude) if (ex && title.includes(ex)) reject.push("hariç kelime: " + ex);
+
+  if (price !== null) reasons.push(`fiyat ${price}`);
+  if (rating !== null) reasons.push(`puan ${rating}`);
+  if (reviews) reasons.push(`yorum ${reviews}`);
+  if (sellerCount !== null) reasons.push(`satıcı ${sellerCount}`);
+  if (item.visible_sales_signal) reasons.push(`görünür sinyal ${item.visible_sales_signal}`);
+
+  return {ok: reject.length === 0, reasons, reject, price, rating, reviews, sellerCount};
+}
+
+function m44Enrich(item, source, criteria){
+  const check = m44Pass(item, criteria || {});
+  const scoreBoost = check.ok ? 5 : -12;
+  const score = Math.max(0, Math.min(100, Number(item.score || 50) + scoreBoost));
+  return {
+    ...item,
+    source: item.source || source,
+    score,
+    decision: score >= 75 ? "GÜÇLÜ ADAY" : score >= 55 ? "İNCELE" : "BEKLET",
+    hunter_reason: check.reasons,
+    reject_reasons: check.reject,
+    data_status: check.ok ? "candidate_ready" : "filtered_or_data_pending",
+    exact_sales_count: null
+  };
+}
+
+async function m44PilotFeed(userId, params){
+  const limit = Math.max(1, Math.min(50, Number(params.limit || 30)));
+  const opp = await listOpportunities(userId, limit).catch(()=>({items:[]}));
+  const alerts = await listAlertsM4(userId, limit).catch(()=>({items:[]}));
+  const items = [];
+  const seen = new Set();
+
+  for (const a of alerts.items || []) {
+    const p = a?.payload?.product || a?.product || a;
+    const idv = p?.id || p?.product_id || p?.product_url || p?.title;
+    if (!idv || seen.has(idv)) continue;
+    seen.add(idv);
+    items.push(m44Enrich(p, p.source || "Pilot", {}));
+  }
+  for (const p of opp.items || []) {
+    const idv = p?.id || p?.product_id || p?.product_url || p?.title;
+    if (!idv || seen.has(idv)) continue;
+    seen.add(idv);
+    items.push(m44Enrich(p, p.source || "Trendyol", {}));
+  }
+
+  items.sort((a,b)=>Number(b.score||0)-Number(a.score||0));
+  const strong = items.filter(x=>Number(x.score||0)>=70).length;
+  return {
+    ok:true,
+    mode:"pilot_feed",
+    version:CONFIG.version,
+    summary:{
+      scanned:(opp.count||0)+(alerts.count||0),
+      strong_candidates:strong,
+      data_pending:0,
+      rejected:0
+    },
+    count:items.length,
+    items:items.slice(0,limit),
+    note:"Pilot hazır fırsat feed'ini gösterir. Tamamlanmamış ürün ana fırsat kartı gibi basılmaz."
+  };
+}
+
+async function m44TrendyolRadar(userId, body){
+  const seeds = m44Seeds(body).slice(0, Math.max(1, Math.min(4, Number(body.seed_limit || body.seedLimit || 3))));
+  const perQuery = Math.max(1, Math.min(8, Number(body.per_query_limit || body.perQueryLimit || 4)));
+  const all = [];
+  const rejected = [];
+  const runs = [];
+  const seen = new Set();
+
+  for (const q of seeds) {
+    const result = await runRadar(userId, {...body, query:q, limit:perQuery, pages:1});
+    runs.push({query:q, ok:result.ok, count:result.count});
+    for (const item of result.items || []) {
+      const enriched = m44Enrich(item, "Trendyol", body);
+      const idv = enriched.product_id || enriched.id || enriched.product_url || enriched.title;
+      if (!idv || seen.has(idv)) continue;
+      seen.add(idv);
+      if (enriched.data_status === "candidate_ready") all.push(enriched);
+      else rejected.push(enriched);
+    }
+  }
+
+  all.sort((a,b)=>Number(b.score||0)-Number(a.score||0));
+  rejected.sort((a,b)=>Number(b.score||0)-Number(a.score||0));
+
+  return {
+    ok:true,
+    mode:"trendyol_criteria_radar",
+    version:CONFIG.version,
+    criteria:body,
+    runs,
+    summary:{
+      scanned:all.length + rejected.length,
+      strong_candidates:all.filter(x=>Number(x.score||0)>=70).length,
+      data_pending:0,
+      rejected:rejected.length
+    },
+    count:all.length,
+    items:all.slice(0,12),
+    rejected_count:rejected.length,
+    note:"Kriterlere uyan ürünler kart olarak gösterilir. Uymayan/eksik ürünler ana fırsat listesine düşürülmez.",
+    next_actions:["Güçlü adayları AI Hakem Odası'na gönder", "Alibaba/Yerli tedarik maliyetini tamamla", "Maliyet / ROI hesabı çıkar"]
+  };
+}
+
+async function m44PilotTick(userId, body){
+  const defaults = {
+    category: body.category || "pratik mutfak, ev düzenleyici, oto aksesuar, bebek güvenlik, kişiselleştirilebilir hediye",
+    max_price: body.max_price || 3000,
+    min_rating: body.min_rating || 4.0,
+    min_reviews: body.min_reviews || 5,
+    seed_limit: body.seed_limit || 3,
+    per_query_limit: body.per_query_limit || 4
+  };
+  const r = await m44TrendyolRadar(userId, {...body, ...defaults});
+  r.mode = "pilot_ai_tick";
+  r.note = "Pilot farklı nişleri dener; sonuç vermeyen parametreler sonraki döngüde azaltılır.";
+  return r;
+}
+
+async function m44SourceRadar(userId, source, body){
+  const keyword = safeText(body.keyword || body.query || body.category || body.product_title || "");
+  const queue = [];
+  if (source === "Meta Ads") {
+    queue.push("Meta Ad Library provider bağlanınca kreatif/sayfa/reklam linki toplanacak");
+    queue.push("Reklam yoğunluğu satış sayısı değildir; momentum sinyalidir");
+  }
+  if (source === "Shopify") {
+    queue.push("Açık Shopify ürün sayfası / ürün fiyatı / mağaza izi toplanacak");
+    queue.push("Özel sipariş/satış adedi izin olmadan gösterilmez");
+  }
+  if (source === "Alibaba") {
+    queue.push("Benzer ürün, MOQ, birim fiyat, numune, navlun ve termin araştırması yapılacak");
+    queue.push("Satıcı mesajlaşması kullanıcı onayı ve bağlı hesapla çalışacak");
+  }
+
+  await moduleEvent(userId, "m44_source_radar", source + " " + keyword, {source, body, queue});
+
+  return {
+    ok:true,
+    mode:"source_research_queue",
+    source,
+    status:"queued",
+    keyword,
+    summary:{scanned:0,strong_candidates:0,data_pending:queue.length,rejected:0},
+    count:0,
+    items:[],
+    data_completion_queue:queue,
+    note:"Bu kaynakta tamamlanmış fırsat kartı yoksa ürün kullanıcıya fırsat diye gösterilmez; araştırma kuyruğuna alınır.",
+    next_actions: source === "Alibaba"
+      ? ["Ürün adını netleştir", "3 tedarikçiye teklif mesajı gönder", "MOQ/birim fiyat/navlun gelince maliyet ekranına aktar"]
+      : ["Canlı sağlayıcıyı bağla", "Açık kaynak sinyallerini topla", "Trendyol boşluk analiziyle eşleştir"]
+  };
+}
+
+async function m44ScoutParams(userId, body){
+  const seeds = m44Seeds(body);
+  const resp = {
+    ok:true,
+    mode:"ai_scout_params",
+    version:CONFIG.version,
+    seeds,
+    summary:"AI parametre motoru tek kategoriye sıkışmamak için farklı niş varyasyonları üretir.",
+    next_actions:["Bu nişlerden 2-3 tanesini sırayla tara", "Kötü sonuç verenleri azalt", "Kaydedilen ürünlere benzeyen nişleri artır"]
+  };
+  await moduleEvent(userId, "m44_scout_params", "AI scout params", resp);
+  return resp;
+}
+
 const server = http.createServer(async(req,res)=>{
   try{
     const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
@@ -2977,6 +3219,48 @@ const server = http.createServer(async(req,res)=>{
 
     if(req.method === "GET" && ["/","/health","/ready"].includes(url.pathname)) return send(res,200,status());
     if(req.method === "GET" && url.pathname === "/adapters") return send(res,200,adaptersStatus());
+
+
+    if(req.method === "GET" && url.pathname === "/pilot/feed") {
+      await dbInitPromise;
+      return send(res,200,await m44PilotFeed(getUserId(req,url,{}), Object.fromEntries(url.searchParams.entries())));
+    }
+
+    if(url.pathname === "/pilot/tick") {
+      await dbInitPromise;
+      const body = req.method === "POST" ? await readBody(req) : Object.fromEntries(url.searchParams.entries());
+      return send(res,200,await m44PilotTick(getUserId(req,url,body), body));
+    }
+
+    if(url.pathname === "/trendyol/radar") {
+      await dbInitPromise;
+      const body = req.method === "POST" ? await readBody(req) : Object.fromEntries(url.searchParams.entries());
+      return send(res,200,await m44TrendyolRadar(getUserId(req,url,body), body));
+    }
+
+    if(url.pathname === "/ads/radar") {
+      await dbInitPromise;
+      const body = req.method === "POST" ? await readBody(req) : Object.fromEntries(url.searchParams.entries());
+      return send(res,200,await m44SourceRadar(getUserId(req,url,body), "Meta Ads", body));
+    }
+
+    if(url.pathname === "/shopify/radar") {
+      await dbInitPromise;
+      const body = req.method === "POST" ? await readBody(req) : Object.fromEntries(url.searchParams.entries());
+      return send(res,200,await m44SourceRadar(getUserId(req,url,body), "Shopify", body));
+    }
+
+    if(url.pathname === "/alibaba/search") {
+      await dbInitPromise;
+      const body = req.method === "POST" ? await readBody(req) : Object.fromEntries(url.searchParams.entries());
+      return send(res,200,await m44SourceRadar(getUserId(req,url,body), "Alibaba", body));
+    }
+
+    if(url.pathname === "/ai/scout-params") {
+      await dbInitPromise;
+      const body = req.method === "POST" ? await readBody(req) : Object.fromEntries(url.searchParams.entries());
+      return send(res,200,await m44ScoutParams(getUserId(req,url,body), body));
+    }
 
     if(req.method === "GET" && url.pathname === "/db-test") {
       await dbInitPromise;
@@ -2995,7 +3279,7 @@ const server = http.createServer(async(req,res)=>{
       const productUrl = safeText(body.url || body.productUrl || url.searchParams.get("url"));
       const evidence = await readProductEvidence(productUrl);
       return send(res, evidence.ok ? 200 : 422, {ok:evidence.ok, app:CONFIG.app, version:CONFIG.version,
-    m43_module_infra:true,
+    m43_module_infra:true,module_detail_flow:true,ai_product_hunter_engine:true, ai_product_hunter_engine:true,
     philosophy:"Çok satanı değil, bizim satabileceğimiz çok satanı bul.", m41_working_core:true, product_evidence:evidence});
     }
 
